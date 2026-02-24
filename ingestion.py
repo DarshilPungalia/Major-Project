@@ -7,7 +7,7 @@ from collections import Counter
 import pickle
 
 class VideoDataLoader:
-    def __init__(self, dataset_path, sequence_length=16, target_size=(224, 224)):
+    def __init__(self, dataset_path, target_size, sequence_length=16):
         self.dataset_path = dataset_path
         self.sequence_length = sequence_length
         self.target_size = target_size
@@ -56,7 +56,7 @@ class VideoDataLoader:
             # Resize and convert to RGB
             frame = cv2.resize(frame, self.target_size)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = frame.astype(np.float32) / 255.0 
+            frame = frame.astype(np.int32) 
             frames.append(frame)
         
         cap.release()
@@ -249,12 +249,12 @@ class VideoDataLoader:
         return data_splits
 
 
-def create_train_val_dataloaders(dataset_path, batch_size=4, train_size=0.8, 
+def create_train_val_dataloaders(dataset_path, target_size, batch_size=4, train_size=0.8, 
                                sequence_length=16, max_videos=None,
                                load_processed=None, save_processed=None, random_state=None):
 
     print("=== Preparing data for Train/Validation Split ===")
-    loader = VideoDataLoader(dataset_path, sequence_length=sequence_length)
+    loader = VideoDataLoader(dataset_path, target_size=target_size, sequence_length=sequence_length)
     
     if load_processed and os.path.exists(load_processed):
         print("Loading processed data from disk...")
@@ -306,7 +306,8 @@ if __name__ == "__main__":
         # Test regular training approach
         print("Testing train/val split approach:")
         train_ds, val_ds, num_poses, loader = create_train_val_dataloaders(
-            "dataset", 
+            "dataset",
+            target_size=(256, 256), 
             batch_size=2, 
             max_videos=20,
             save_processed="processed_data"

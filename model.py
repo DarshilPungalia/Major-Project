@@ -1,7 +1,6 @@
 import tensorflow as tf
 import tensorflow_hub as hub
-from typing import Tuple
-
+from numpy import ndarray
 
 class MoveNetLayer(tf.keras.layers.Layer):
     """
@@ -25,11 +24,10 @@ class MoveNetLayer(tf.keras.layers.Layer):
     def call(self, frame):
         """
         Args:
-            frame: float32 tensor of shape (H, W, 3), values in [0, 1]
+            frame: int32 tensor of shape (H, W, 3)
         Returns:
             keypoints: float32 tensor of shape (51,)
         """
-        frame_uint8 = tf.cast(frame * 255.0, tf.int32)
         frame_uint8 = tf.expand_dims(frame_uint8, axis=0)           # (1, H, W, 3)
 
         outputs = self.movenet(input=frame_uint8)
@@ -42,10 +40,38 @@ class MoveNetLayer(tf.keras.layers.Layer):
         config.update({'variant': self.variant})
         return config
 
+class KeypointSequenceLayer(tf.keras.layers.Layer):
+    """
+    Applies MoveNet to every frame in a (batch, sequence, H, W, 3) input.
+    Returns (batch, sequence, 51).
+    """
+    def __init__(self, movenet_variant='thunder', **kwargs):
+        super().__init__(**kwargs)
+        self.movenet_layer = MoveNetLayer(variant=movenet_variant, name='movenet')
+        self.movenet_variant = movenet_variant
+
+    def call(self, x):
+        # x: (batch, sequence, H, W, 3)
+        # map over batch, then over sequence frames
+        return tf.map_fn(
+            lambda frame_seq: tf.map_fn(
+                self.movenet_layer,
+                frame_seq,
+                fn_output_signature=tf.float32
+            ),
+            x,
+            fn_output_signature=tf.float32
+        )
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({'movenet_variant': self.movenet_variant})
+        return config
+
 
 class VideoModel:
     def __init__(self, num_poses,
-                 input_shape=(16, 192, 192, 3),
+                 input_shape=(16, 256, 256, 3),
                  learning_rate=1e-4,
                  movenet_variant='thunder'):
         """
@@ -54,8 +80,6 @@ class VideoModel:
                          MoveNet Thunder expects 256×256, Lightning expects 192×192.
                          Pass the appropriate H/W for your chosen variant.
             movenet_variant: 'thunder' (more accurate) or 'lightning' (faster).
-            use_lstm: If True, an LSTM models temporal patterns over keypoints.
-                      If False, keypoints are simply flattened and pooled.
         """
         self.input_shape = input_shape
         self.num_poses = num_poses
@@ -72,20 +96,9 @@ class VideoModel:
         keypoint_features = NUM_KEYPOINTS * KEYPOINT_DIM  
 
         inputs = tf.keras.layers.Input(shape=self.input_shape, name='video_input')
-        movenet_layer = MoveNetLayer(variant=self.movenet_variant, name='movenet')
 
-        keypoints_seq = tf.keras.layers.Lambda(
-            lambda x: tf.map_fn(
-                lambda frame_seq: tf.map_fn(
-                    movenet_layer,
-                    frame_seq,
-                    fn_output_signature=tf.float32
-                ),
-                x,
-                fn_output_signature=tf.float32
-            ),
-            name='keypoint_extraction'
-        )(inputs)
+        keypoint_seq_layer = KeypointSequenceLayer(movenet_variant=self.movenet_variant, name='keypoint_extraction')
+        keypoints_seq = keypoint_seq_layer(inputs)
 
         x = tf.keras.layers.LSTM(
             128, return_sequences=False
@@ -105,25 +118,68 @@ class VideoModel:
 
         return estimation_model
 
-    def compile_models(self) -> tf.keras.Model:
+    def _compile_model(self) -> tf.keras.Model:
         """Compile the model"""
-        model= self.model
+        model = self.model
 
         self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
 
         model.compile(
             optimizer=self.optimizer,
-            loss='categorical_crossentropy',
-            metrics=['accuracy']
+            loss=tf.keras.losses.CategoricalCrossentropy(),
+            metrics=['accuracy', 'precision', 'recall']
         )
-
 
         return model
 
-    def fit(self, x, y=None, validation_data=None, epochs=10, verbose=True,
-            batch_size=8, steps_per_epoch=None, validation_steps=None):
-        pass
+    def fit(self, x: tf.data.Dataset | ndarray, y: tf.data.Dataset | ndarray=None, validation_data: tf.data.Dataset | tuple[ndarray, ndarray]=None, 
+            epochs=10, verbose=True, batch_size=8, steps_per_epoch=None, validation_steps=None):
+        
+        self.model = self._compile_model()
+        model = self.model
+
+        if type(x) is tf.data.Dataset:
+            history = model.fit(x,
+                      validation_data=validation_data,
+                      epochs=epochs,
+                      steps_per_epoch=steps_per_epoch,
+                      validation_steps=validation_steps,
+                      verbose=verbose)
+        
+        elif type(x) is ndarray:
+            if y is None:
+                raise ValueError('y is neccessary when x is of type ndarray')
+
+            else:
+                if validation_data:
+                    if type(validation_data) is not tuple:
+                        raise TypeError(f'Expected tuple, got {type(validation_data)}')
+                    
+                    for data in validation_data:
+                        if type(data) is not ndarray:
+                            raise TypeError(f'Expected ndarray, got {type(validation_data)}')
+                        
+                history = model.fit(x, y,
+                          validation_data=validation_data,
+                          epochs=epochs,
+                          steps_per_epoch=steps_per_epoch,
+                          batch_size=batch_size,
+                          validation_steps=validation_steps,
+                          verbose=verbose)
+        
+        else:
+            raise TypeError(f'Expected x to be Dataset or ndarray, got {type(x)}')
+        
+        self.fitted = True
+        self.model = model
+
+        return history.history
 
     def predict(self, x):
         if not self.fitted:
             raise ValueError('Call .fit() first')
+        
+        else:
+            predictions = self.model.predict(x)
+        
+        return predictions
