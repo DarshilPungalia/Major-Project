@@ -8,11 +8,14 @@ import pickle
 from typing import Literal
 
 class VideoDataLoader:
-    def __init__(self, dataset_path, sequence_length=16, movenet_variant: Literal['thunder', 'lightning']='thunder'):
+    def __init__(self, dataset_path, sequence_length=16, movenet_variant: Literal['thunder', 'lightning']='thunder', pool_frames=True):
         self.dataset_path = dataset_path
         self.sequence_length = sequence_length
         self.movenet_variant = str.lower(movenet_variant)
+        self.pool_frames = pool_frames
         self.target_size = None
+        self.batch_size = None
+        self.train_size = None
         
         # Storage for data
         self.videos = []
@@ -104,7 +107,7 @@ class VideoDataLoader:
             video_keypoints.append(kp)
 
         video_keypoints = np.array(video_keypoints)
-        
+
         return video_keypoints
     
     def load_all_videos(self, max_videos=None):
@@ -136,6 +139,10 @@ class VideoDataLoader:
         
         X = np.array(X)  
         y_pose = np.array(y_pose)
+
+        if self.pool_frames:
+            X = X.mean(axis=1)  
+            print(f"Frame-pooled data shape: {X.shape}")
         
         print(f"Loaded {len(X)} videos successfully")
         print(f"Video data shape: {X.shape}")
@@ -146,6 +153,7 @@ class VideoDataLoader:
     def create_balanced_split(self, X, y_pose, train_size=0.8, random_state=None):
         """Create balanced train/val splits with fallback for small datasets"""
         val_size = 1.0 - train_size
+        self.train_size = train_size
        
         label_counts = Counter(y_pose)
         print("\nLabel distribution:")
@@ -226,10 +234,12 @@ class VideoDataLoader:
             y_pose_onehot.astype(np.float32),
         ))
         
+        self.batch_size = batch_size
+
         if shuffle:
             dataset = dataset.shuffle(buffer_size=len(X))
         
-        dataset = dataset.batch(batch_size, drop_remainder=True)
+        dataset = dataset.batch(batch_size)
         
         if prefetch:
             dataset = dataset.prefetch(tf.data.AUTOTUNE)
@@ -244,7 +254,10 @@ class VideoDataLoader:
             'num_poses': self.num_poses,
             'pose_names': self.pose_names,
             'sequence_length': self.sequence_length,
-            'target_size': self.target_size
+            'movenet_variant': self.movenet_variant,
+            'batch_size': self.batch_size,
+            'pool_frames': self.pool_frames,
+            'train_size': self.train_size
         }
         
         with open(os.path.join(save_path, 'metadata.pkl'), 'wb') as f:
@@ -260,13 +273,13 @@ class VideoDataLoader:
     
     def load_processed_data(self, save_path):
         """Load processed data from disk"""
-        with open(os.path.join(save_path, 'metadata.pkl'), 'rb') as f:
+        '''with open(os.path.join(save_path, 'metadata.pkl'), 'rb') as f:
             metadata = pickle.load(f)
         
         self.num_poses = metadata['num_poses']
         self.pose_names = metadata['pose_names']
         self.sequence_length = metadata['sequence_length']
-        self.target_size = metadata['target_size']
+        self.movenet_variant = metadata['movenet_variant']'''
         
         data_splits = {}
         possible_splits = ['train', 'val', 'full']
@@ -281,14 +294,34 @@ class VideoDataLoader:
         return data_splits
 
 
+def verify_metadata(saved_path , new_metadata:dict):
+    with open(os.path.join(saved_path, 'metadata.pkl'), 'rb') as f:
+        saved_metadata = pickle.load(f)
+
+    if saved_metadata == new_metadata:
+        return True
+    
+    return False
+
 def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder', 'lightning']='thunder', batch_size=4, train_size=0.8, 
                                sequence_length=16, max_videos=None,
-                               load_processed=None, save_processed=None, random_state=None):
+                               load_processed=None, save_processed=None, random_state=None, pool_frames=False):
 
     print("=== Preparing data for Train/Validation Split ===")
-    loader = VideoDataLoader(dataset_path, movenet_variant=movenet_variant, sequence_length=sequence_length)
+    loader = VideoDataLoader(dataset_path, movenet_variant=movenet_variant, sequence_length=sequence_length, pool_frames=pool_frames)
+
+    pose_names = os.listdir(dataset_path)
+    metadata = {
+            'num_poses': len(pose_names),
+            'pose_names': pose_names,
+            'sequence_length': sequence_length,
+            'movenet_variant': movenet_variant,
+            'batch_size': batch_size,
+            'pool_frames': pool_frames,
+            'train_size': train_size
+    }
     
-    if load_processed and os.path.exists(load_processed):
+    if load_processed and os.path.exists(load_processed) and verify_metadata(saved_path=load_processed, new_metadata=metadata):
         print("Loading processed data from disk...")
         data_splits = loader.load_processed_data(load_processed)
         
@@ -340,10 +373,11 @@ if __name__ == "__main__":
         train_ds, val_ds, num_poses, loader = create_train_val_dataloaders(
             "dataset",
             movenet_variant='thunder', 
-            batch_size=8,
-            sequence_length=32, 
+            batch_size=16,
+            sequence_length=64, 
             max_videos=None,
-            save_processed="thunder_data"
+            save_processed="thunder_data",
+            pool_frames=True
         )
         
         print(f"\nDataset info:")

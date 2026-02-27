@@ -20,22 +20,16 @@ class VideoModel:
     def build_model(self):
         inputs = tf.keras.layers.Input(shape=self.input_shape, name='video_input')
 
-        x = tf.keras.layers.Flatten()(inputs)
 
-        x = tf.keras.layers.LSTM(
-            128, return_sequences=False
-        )(x)
-       
-        x = tf.keras.layers.Dropout(0.35)(x)
-        x = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-2))(x)
+        x = tf.keras.layers.Dense(128, activation='relu')(inputs)
+        x = tf.keras.layers.Dropout(0.3)(x)
+        x = tf.keras.layers.Dense(64, activation='relu')(x)
+        x = tf.keras.layers.Dropout(0.3)(x)
 
-        est = tf.keras.layers.Dropout(0.5)(x)
-        pose_estimation = tf.keras.layers.Dense(
-            self.num_poses, activation='softmax'
-        )(est)
+        outputs = tf.keras.layers.Dense(self.num_poses, activation='softmax')(x)
 
         estimation_model = tf.keras.Model(
-            inputs= inputs, outputs=pose_estimation, name='estimation'
+            inputs= inputs, outputs=outputs, name='estimation'
         )
 
         return estimation_model
