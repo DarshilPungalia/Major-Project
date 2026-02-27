@@ -1,2 +1,4 @@
 processed_data
-dataset
+__pycache__
+.env
+movenet
