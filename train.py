@@ -14,17 +14,17 @@ def save_training_config(config, model_dir):
         json.dump(config, f, indent=2)
     print(f"Training config saved to {config_path}")
 
-def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_length, target_size, 
-                      num_poses, learning_rate, model_dir, max_videos, movenet_variant: Literal['thunder', 'lightning']='thunder') -> VideoModel:
+def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_length, 
+                      num_poses, learning_rate, model_dir, max_videos, 
+                      movenet_variant: Literal['thunder', 'lightning']='thunder') -> VideoModel:
     
     # Create model with dynamic classes
-    input_shape = (sequence_length, target_size[0], target_size[1], 3)
+    input_shape = (sequence_length, 51)
 
     model = VideoModel(
         input_shape=input_shape,
         num_poses=num_poses,
         learning_rate=learning_rate,
-        movenet_variant=movenet_variant
     )
     
     config = {
@@ -34,7 +34,6 @@ def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_len
         'train_size': train_size,
         'max_videos': max_videos,
         'sequence_length': sequence_length,
-        'target_size': target_size,
         'num_poses': num_poses,
         'input_shape': input_shape,
         'learning_rate': learning_rate,
@@ -45,10 +44,10 @@ def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_len
 
     return model
 
-def save_model(model, dir):
-        path = os.path.join(dir, f'{model.name}.keras')
-        model.save(path)
-        print(f'Saved {model.name} to {path}')
+def save_model(model: VideoModel, dir):
+        path = os.path.join(dir, f'{model.model.name}.keras')
+        model.model.save(path)
+        print(f'Saved {model.model.name} to {path}')
 
 def train_model(dataset_path, 
                 batch_size=4, 
@@ -90,17 +89,10 @@ def train_model(dataset_path,
     
     # Load data
     print("Loading and preparing data...")
-
-    variant_to_size = {
-        'thunder': (256, 256),
-        'lightning': (192, 192)
-    }
-
-    target_size = variant_to_size.get(str.lower(movenet_variant), (256, 256))
     
     train_dataset, val_dataset, num_poses, loader = create_train_val_dataloaders(
             dataset_path=dataset_path,
-            target_size=target_size,
+            movenet_variant=movenet_variant,
             batch_size=batch_size,
             train_size=train_size,
             sequence_length=sequence_length,
@@ -118,7 +110,6 @@ def train_model(dataset_path,
                                   sequence_length=sequence_length,
                                   movenet_variant=movenet_variant,
                                   num_poses=num_poses,
-                                  target_size=target_size,
                                   max_videos=max_videos,
                                   learning_rate=learning_rate,
                                   model_dir=model_dir)
@@ -162,14 +153,14 @@ def main():
     
     model, results, model_dir = train_model(
         dataset_path="dataset",
-        batch_size=16,
-        epochs=15,
+        batch_size=8,
+        epochs=8,
         train_size=0.7,
-        sequence_length=16,
+        sequence_length=32,
         learning_rate=1e-3,
         max_videos=None,  
-        load_processed="processed_data",
-        save_processed="processed_data",
+        load_processed="thunder_data",
+        save_processed="thunder_data",
         model_dir="Thunder",
         movenet_variant='thunder',
         random_state=42
@@ -183,4 +174,7 @@ def main():
         return None
 
 if __name__ == "__main__":
+    import warnings
+
+    warnings.filterwarnings('ignore')
     model_dir = main()

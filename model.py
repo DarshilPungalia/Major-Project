@@ -1,108 +1,30 @@
 import tensorflow as tf
-import tensorflow_hub as hub
 from numpy import ndarray
-
-class MoveNetLayer(tf.keras.layers.Layer):
-    """
-    Wraps MoveNet (Thunder or Lightning) from TF Hub as a Keras layer.
-    MoveNet expects uint8 input of shape (1, H, W, 3) and returns
-    keypoints of shape (1, 1, 17, 3) — [y, x, confidence] per keypoint.
-    We flatten to (51,) per frame.
-    """
-    MODELS = {
-        'thunder': 'https://tfhub.dev/google/movenet/singlepose/thunder/4',
-        'lightning': 'https://tfhub.dev/google/movenet/singlepose/lightning/4',
-    }
-
-    def __init__(self, variant='thunder', **kwargs):
-        super().__init__(**kwargs)
-        if variant not in self.MODELS:
-            raise ValueError(f"variant must be one of {list(self.MODELS.keys())}")
-        self.variant = variant
-        self.movenet = hub.load(self.MODELS[variant]).signatures['serving_default']
-
-    def call(self, frame):
-        """
-        Args:
-            frame: int32 tensor of shape (H, W, 3)
-        Returns:
-            keypoints: float32 tensor of shape (51,)
-        """
-        frame_uint8 = tf.expand_dims(frame_uint8, axis=0)           # (1, H, W, 3)
-
-        outputs = self.movenet(input=frame_uint8)
-        keypoints = outputs['output_0']                              # (1, 1, 17, 3)
-        keypoints = tf.reshape(keypoints, [-1])                      
-        return keypoints
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({'variant': self.variant})
-        return config
-
-class KeypointSequenceLayer(tf.keras.layers.Layer):
-    """
-    Applies MoveNet to every frame in a (batch, sequence, H, W, 3) input.
-    Returns (batch, sequence, 51).
-    """
-    def __init__(self, movenet_variant='thunder', **kwargs):
-        super().__init__(**kwargs)
-        self.movenet_layer = MoveNetLayer(variant=movenet_variant, name='movenet')
-        self.movenet_variant = movenet_variant
-
-    def call(self, x):
-        # x: (batch, sequence, H, W, 3)
-        # map over batch, then over sequence frames
-        return tf.map_fn(
-            lambda frame_seq: tf.map_fn(
-                self.movenet_layer,
-                frame_seq,
-                fn_output_signature=tf.float32
-            ),
-            x,
-            fn_output_signature=tf.float32
-        )
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({'movenet_variant': self.movenet_variant})
-        return config
-
 
 class VideoModel:
     def __init__(self, num_poses,
-                 input_shape=(16, 256, 256, 3),
-                 learning_rate=1e-4,
-                 movenet_variant='thunder'):
+                 input_shape=(16, 51),
+                 learning_rate=1e-4):
         """
         Args:
-            input_shape: (sequence_length, H, W, 3).
-                         MoveNet Thunder expects 256×256, Lightning expects 192×192.
-                         Pass the appropriate H/W for your chosen variant.
-            movenet_variant: 'thunder' (more accurate) or 'lightning' (faster).
+            num_poses: Number of classes
+            input_shape: (sequence_length, keypoints).
         """
         self.input_shape = input_shape
         self.num_poses = num_poses
         self.learning_rate = learning_rate
         self.fitted = False
-        self.movenet_variant = movenet_variant
 
         self.model = self.build_model()
 
     def build_model(self):
-        sequence_length = self.input_shape[0]   
-        NUM_KEYPOINTS = 17
-        KEYPOINT_DIM = 3                         # y, x, confidence
-        keypoint_features = NUM_KEYPOINTS * KEYPOINT_DIM  
-
         inputs = tf.keras.layers.Input(shape=self.input_shape, name='video_input')
 
-        keypoint_seq_layer = KeypointSequenceLayer(movenet_variant=self.movenet_variant, name='keypoint_extraction')
-        keypoints_seq = keypoint_seq_layer(inputs)
+        x = tf.keras.layers.Flatten()(inputs)
 
         x = tf.keras.layers.LSTM(
             128, return_sequences=False
-        )(keypoints_seq)
+        )(x)
        
         x = tf.keras.layers.Dropout(0.35)(x)
         x = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-2))(x)
@@ -138,7 +60,7 @@ class VideoModel:
         self.model = self._compile_model()
         model = self.model
 
-        if type(x) is tf.data.Dataset:
+        if isinstance(x, tf.data.Dataset):
             history = model.fit(x,
                       validation_data=validation_data,
                       epochs=epochs,
@@ -146,7 +68,7 @@ class VideoModel:
                       validation_steps=validation_steps,
                       verbose=verbose)
         
-        elif type(x) is ndarray:
+        elif isinstance(x, ndarray):
             if y is None:
                 raise ValueError('y is neccessary when x is of type ndarray')
 
@@ -156,8 +78,8 @@ class VideoModel:
                         raise TypeError(f'Expected tuple, got {type(validation_data)}')
                     
                     for data in validation_data:
-                        if type(data) is not ndarray:
-                            raise TypeError(f'Expected ndarray, got {type(validation_data)}')
+                        if not isinstance(data, ndarray):
+                            raise TypeError(f'Expected ndarray, got {type(data)}')
                         
                 history = model.fit(x, y,
                           validation_data=validation_data,

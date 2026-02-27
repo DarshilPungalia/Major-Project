@@ -5,12 +5,14 @@ import tensorflow as tf
 from sklearn.model_selection import train_test_split
 from collections import Counter
 import pickle
+from typing import Literal
 
 class VideoDataLoader:
-    def __init__(self, dataset_path, target_size, sequence_length=16):
+    def __init__(self, dataset_path, sequence_length=16, movenet_variant: Literal['thunder', 'lightning']='thunder'):
         self.dataset_path = dataset_path
         self.sequence_length = sequence_length
-        self.target_size = target_size
+        self.movenet_variant = str.lower(movenet_variant)
+        self.target_size = None
         
         # Storage for data
         self.videos = []
@@ -47,6 +49,13 @@ class VideoDataLoader:
         """Load and preprocess video frames"""
         cap = cv2.VideoCapture(video_path)
         frames = []
+
+        variant_to_size = {
+            'lightning': (192, 192),
+            'thunder': (256, 256)
+        }
+
+        self.target_size = variant_to_size.get(self.movenet_variant, (256, 256))
         
         while True:
             ret, frame = cap.read()
@@ -75,6 +84,29 @@ class VideoDataLoader:
         
         return frames
     
+    def extract_keypoints(self, frames)-> np.ndarray:
+        variant_to_path = {
+            'lightning': './movenet/singlepose-lightning/4',
+            'thunder': './movenet/singlepose-thunder/4'
+        }
+
+        path = variant_to_path.get(self.movenet_variant, 'thunder')
+        model = tf.saved_model.load(path)
+
+        movenet = model.signatures['serving_default']
+        video_keypoints = []
+
+        for frame in frames:
+            frame = tf.expand_dims(frame, axis=0)
+            output = movenet(frame)
+            kp = output['output_0']
+            kp = tf.reshape(kp[0, 0], shape=(-1,)).numpy()
+            video_keypoints.append(kp)
+
+        video_keypoints = np.array(video_keypoints)
+        
+        return video_keypoints
+    
     def load_all_videos(self, max_videos=None):
         """Load all videos into numpy arrays"""
         if max_videos:
@@ -95,7 +127,8 @@ class VideoDataLoader:
             
             try:
                 frames = self.load_video_frames(video_path)
-                X.append(frames)
+                keypoints = self.extract_keypoints(frames)
+                X.append(keypoints)
                 y_pose.append(pose_labels[i])
             except Exception as e:
                 print(f"Error loading {video_path}: {e}")
@@ -218,10 +251,10 @@ class VideoDataLoader:
             pickle.dump(metadata, f)
         
         # Save data splits
-        for split_name, (X, y_pose) in data_splits.items():
+        for split_name, (X, y) in data_splits.items():
             if X is not None:
                 np.save(os.path.join(save_path, f'{split_name}_X.npy'), X)
-                np.save(os.path.join(save_path, f'{split_name}_y_pose.npy'), y_pose)
+                np.save(os.path.join(save_path, f'{split_name}_y.npy'), y)
         
         print(f"Data saved to {save_path}")
     
@@ -242,19 +275,18 @@ class VideoDataLoader:
             X_path = os.path.join(save_path, f'{split_name}_X.npy')
             if os.path.exists(X_path):
                 X = np.load(X_path)
-                y_pose = np.load(os.path.join(save_path, f'{split_name}_y_pose.npy'))
-                y_quality = np.load(os.path.join(save_path, f'{split_name}_y_quality.npy'))
-                data_splits[split_name] = (X, y_pose)
+                y = np.load(os.path.join(save_path, f'{split_name}_y.npy'))
+                data_splits[split_name] = (X, y)
         
         return data_splits
 
 
-def create_train_val_dataloaders(dataset_path, target_size, batch_size=4, train_size=0.8, 
+def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder', 'lightning']='thunder', batch_size=4, train_size=0.8, 
                                sequence_length=16, max_videos=None,
                                load_processed=None, save_processed=None, random_state=None):
 
     print("=== Preparing data for Train/Validation Split ===")
-    loader = VideoDataLoader(dataset_path, target_size=target_size, sequence_length=sequence_length)
+    loader = VideoDataLoader(dataset_path, movenet_variant=movenet_variant, sequence_length=sequence_length)
     
     if load_processed and os.path.exists(load_processed):
         print("Loading processed data from disk...")
@@ -307,10 +339,11 @@ if __name__ == "__main__":
         print("Testing train/val split approach:")
         train_ds, val_ds, num_poses, loader = create_train_val_dataloaders(
             "dataset",
-            target_size=(256, 256), 
-            batch_size=2, 
-            max_videos=20,
-            save_processed="processed_data"
+            movenet_variant='thunder', 
+            batch_size=8,
+            sequence_length=32, 
+            max_videos=None,
+            save_processed="thunder_data"
         )
         
         print(f"\nDataset info:")
