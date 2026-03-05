@@ -13,6 +13,7 @@ class VideoDataLoader:
         self.sequence_length = sequence_length
         self.movenet_variant = str.lower(movenet_variant)
         self.pool_frames = pool_frames
+        self.model = self._load_model(self.movenet_variant)
         self.target_size = None
         self.batch_size = None
         self.train_size = None
@@ -87,16 +88,20 @@ class VideoDataLoader:
         
         return frames
     
-    def extract_keypoints(self, frames)-> np.ndarray:
+    @staticmethod
+    def _load_model(movenet_variant):
         variant_to_path = {
             'lightning': './movenet/singlepose-lightning/4',
             'thunder': './movenet/singlepose-thunder/4'
         }
 
-        path = variant_to_path.get(self.movenet_variant, 'thunder')
+        path = variant_to_path.get(movenet_variant, 'thunder')
         model = tf.saved_model.load(path)
 
-        movenet = model.signatures['serving_default']
+        return model
+    
+    def extract_keypoints(self, frames)-> np.ndarray:
+        movenet = self.model.signatures['serving_default']
         video_keypoints = []
 
         for frame in frames:
@@ -273,13 +278,13 @@ class VideoDataLoader:
     
     def load_processed_data(self, save_path):
         """Load processed data from disk"""
-        '''with open(os.path.join(save_path, 'metadata.pkl'), 'rb') as f:
+        with open(os.path.join(save_path, 'metadata.pkl'), 'rb') as f:
             metadata = pickle.load(f)
         
         self.num_poses = metadata['num_poses']
         self.pose_names = metadata['pose_names']
         self.sequence_length = metadata['sequence_length']
-        self.movenet_variant = metadata['movenet_variant']'''
+        self.movenet_variant = metadata['movenet_variant']
         
         data_splits = {}
         possible_splits = ['train', 'val', 'full']
@@ -310,7 +315,8 @@ def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder
     print("=== Preparing data for Train/Validation Split ===")
     loader = VideoDataLoader(dataset_path, movenet_variant=movenet_variant, sequence_length=sequence_length, pool_frames=pool_frames)
 
-    pose_names = os.listdir(dataset_path)
+    pose_names = sorted(os.listdir(dataset_path))
+    
     metadata = {
             'num_poses': len(pose_names),
             'pose_names': pose_names,

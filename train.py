@@ -15,11 +15,11 @@ def save_training_config(config, model_dir):
     print(f"Training config saved to {config_path}")
 
 def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_length, 
-                      num_poses, learning_rate, model_dir, max_videos, 
+                      num_poses, learning_rate, model_dir, max_videos, pool_frames,
                       movenet_variant: Literal['thunder', 'lightning']='thunder') -> VideoModel:
     
     # Create model with dynamic classes
-    input_shape = (sequence_length, 51)
+    input_shape = (sequence_length, 51) if not pool_frames else (51,)
 
     model = VideoModel(
         input_shape=input_shape,
@@ -57,6 +57,7 @@ def train_model(dataset_path,
                 max_videos=None,
                 save_processed=None,
                 load_processed=None,
+                pool_frames=False,
                 model_dir="models",
                 sequence_length=16,
                 movenet_variant: Literal['thunder', 'lightning']='thunder',
@@ -99,7 +100,8 @@ def train_model(dataset_path,
             max_videos=max_videos,
             save_processed=save_processed,
             load_processed=load_processed,
-            random_state= random_state
+            random_state= random_state,
+            pool_frames=pool_frames
         )
     
     try:          
@@ -112,7 +114,8 @@ def train_model(dataset_path,
                                   num_poses=num_poses,
                                   max_videos=max_videos,
                                   learning_rate=learning_rate,
-                                  model_dir=model_dir)
+                                  model_dir=model_dir,
+                                  pool_frames=pool_frames)
         
         training_result = model.fit(
                     x=train_dataset,
@@ -153,17 +156,18 @@ def main():
     
     model, results, model_dir = train_model(
         dataset_path="dataset",
+        epochs=16,
         batch_size=8,
-        epochs=8,
-        train_size=0.7,
-        sequence_length=32,
+        train_size=0.8,
+        sequence_length=64,
         learning_rate=1e-3,
-        max_videos=None,  
-        load_processed="thunder_data",
+        max_videos=None,
+        load_processed="thunder_data",  
         save_processed="thunder_data",
         model_dir="Thunder",
         movenet_variant='thunder',
-        random_state=42
+        random_state=42,
+        pool_frames=True
     )
         
     if model_dir:

@@ -3,7 +3,7 @@ from numpy import ndarray
 
 class VideoModel:
     def __init__(self, num_poses,
-                 input_shape=(16, 51),
+                 input_shape,
                  learning_rate=1e-4):
         """
         Args:
