@@ -15,7 +15,6 @@ class VideoDataLoader:
         self.pool_frames = pool_frames
         self.model = self._load_model(self.movenet_variant)
         self.target_size = None
-        self.batch_size = None
         self.train_size = None
         
         # Storage for data
@@ -239,8 +238,6 @@ class VideoDataLoader:
             y_pose_onehot.astype(np.float32),
         ))
         
-        self.batch_size = batch_size
-
         if shuffle:
             dataset = dataset.shuffle(buffer_size=len(X))
         
@@ -251,7 +248,7 @@ class VideoDataLoader:
         
         return dataset
     
-    def save_processed_data(self, data_splits, save_path):
+    def save_processed_data(self, data_splits, save_path, batch_size):
         """Save processed data to disk"""
         os.makedirs(save_path, exist_ok=True)
         
@@ -260,7 +257,7 @@ class VideoDataLoader:
             'pose_names': self.pose_names,
             'sequence_length': self.sequence_length,
             'movenet_variant': self.movenet_variant,
-            'batch_size': self.batch_size,
+            'batch_size': batch_size,
             'pool_frames': self.pool_frames,
             'train_size': self.train_size
         }
@@ -342,7 +339,7 @@ def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder
             X_val, y_pose_val = data_splits['val']
             
             if save_processed:
-                loader.save_processed_data(data_splits, save_processed)
+                loader.save_processed_data(data_splits, save_processed, batch_size)
         else:
             raise ValueError("No suitable data found in processed files")
     else:
@@ -356,7 +353,7 @@ def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder
         
         if save_processed:
             print("Saving processed data...")
-            loader.save_processed_data(data_splits, save_processed)
+            loader.save_processed_data(data_splits, save_processed, batch_size)
     
     train_dataset = loader.create_tensorflow_dataset(
         X_train, y_pose_train, 
