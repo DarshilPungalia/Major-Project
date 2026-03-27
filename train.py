@@ -18,12 +18,13 @@ def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_len
                       num_poses, learning_rate, model_dir, max_videos, pool_frames,
                       movenet_variant: Literal['thunder', 'lightning']='thunder') -> VideoModel:
     
-    # Create model with dynamic classes
     input_shape = (sequence_length, 51) if not pool_frames else (51,)
+    num_joints = 17  
 
     model = VideoModel(
         input_shape=input_shape,
         num_poses=num_poses,
+        num_joints=num_joints,
         learning_rate=learning_rate,
     )
     
@@ -45,7 +46,7 @@ def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_len
     return model
 
 def save_model(model: VideoModel, dir):
-        path = os.path.join(dir, f'{model.model.name}.keras')
+        path = os.path.join(dir, f'{model.model.name}.pt')
         model.model.save(path)
         print(f'Saved {model.model.name} to {path}')
 
@@ -156,18 +157,18 @@ def main():
     
     model, results, model_dir = train_model(
         dataset_path="dataset",
-        epochs=16,
-        batch_size=8,
+        epochs=50,
+        batch_size=16,
         train_size=0.8,
-        sequence_length=64,
-        learning_rate=1e-3,
+        sequence_length=256,
+        learning_rate=1e-4,
         max_videos=None,
         load_processed="thunder_data",  
         save_processed="thunder_data",
         model_dir="Thunder",
         movenet_variant='thunder',
         random_state=42,
-        pool_frames=True
+        pool_frames=False
     )
         
     if model_dir:
