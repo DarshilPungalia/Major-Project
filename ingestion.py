@@ -6,6 +6,41 @@ from sklearn.model_selection import train_test_split
 from collections import Counter
 import pickle
 from typing import Literal
+from time import perf_counter
+import torch
+from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
+
+class PoseDataset(Dataset):
+    def __init__(self, X, y_pose, num_poses):
+        self.X = torch.from_numpy(X.astype(np.float32))
+        self.y_pose = torch.from_numpy(y_pose).long()
+        self.num_poses = num_poses
+    
+    def __len__(self):
+        return len(self.X)
+    
+    def __getitem__(self, idx):
+        return self.X[idx], self.y_pose[idx]
+
+class Timer:
+    def __init__(self, func):
+        self.func = func
+        self.exec_time = None
+    
+    def __call__(self, *args, **kwargs):
+        s = perf_counter()
+        result = self.func(*args, **kwargs)
+        e = perf_counter()
+        self.exec_time = e - s
+        return result
+    
+    def __get__(self, obj, objtype=None):
+        """Support instance methods by implementing descriptor protocol"""
+        if obj is None:
+            return self
+        import types
+        return types.MethodType(self, obj)
 
 class VideoDataLoader:
     def __init__(self, dataset_path, sequence_length=16, movenet_variant: Literal['thunder', 'lightning']='thunder', pool_frames=True):
@@ -24,6 +59,7 @@ class VideoDataLoader:
         
         self._load_dataset_info()
     
+
     def _load_dataset_info(self):
         """Load dataset structure and file paths"""
         # Get pose folders
@@ -48,6 +84,7 @@ class VideoDataLoader:
         print(f"Found {len(self.videos)} videos")
         print(f"Poses ({self.num_poses}): {self.pose_names}")
     
+    @Timer
     def load_video_frames(self, video_path):
         """Load and preprocess video frames"""
         cap = cv2.VideoCapture(video_path)
@@ -99,6 +136,7 @@ class VideoDataLoader:
 
         return model
     
+    @Timer
     def extract_keypoints(self, frames)-> np.ndarray:
         movenet = self.model.signatures['serving_default']
         video_keypoints = []
@@ -107,10 +145,10 @@ class VideoDataLoader:
             frame = tf.expand_dims(frame, axis=0)
             output = movenet(frame)
             kp = output['output_0']
-            kp = tf.reshape(kp[0, 0], shape=(-1,)).numpy()
+            kp = np.array(kp[0, 0])
             video_keypoints.append(kp)
 
-        video_keypoints = np.array(video_keypoints)
+        video_keypoints = np.array(video_keypoints).reshape((3, 256, 17))
 
         return video_keypoints
     
@@ -125,16 +163,25 @@ class VideoDataLoader:
         
         X = []
         y_pose = []
+
+        etkp_time = 0
+        lf_time = 0
         
         print(f"Loading {len(video_paths)} videos...")
         
         for i, video_path in enumerate(video_paths):
             if i % 10 == 0:
                 print(f"Loading video {i+1}/{len(video_paths)}")
-            
+                print(f"Extract Keypoints took {etkp_time}s for 10 Videos")
+                print(f"Loading Frames took {lf_time}s for 10 Videos")
+                etkp_time = 0
+                lf_time = 0
+                
             try:
                 frames = self.load_video_frames(video_path)
                 keypoints = self.extract_keypoints(frames)
+                etkp_time += self.extract_keypoints.exec_time
+                lf_time += self.load_video_frames.exec_time
                 X.append(keypoints)
                 y_pose.append(pose_labels[i])
             except Exception as e:
@@ -248,6 +295,21 @@ class VideoDataLoader:
         
         return dataset
     
+    def create_pytorch_dataloader(self, X, y_pose, batch_size=4, shuffle=True, num_workers=2):
+        """Convert numpy arrays to PyTorch DataLoader"""
+        dataset = PoseDataset(X, y_pose, self.num_poses)
+        
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers, 
+            pin_memory=True,  
+            persistent_workers=True if num_workers > 0 else False 
+        )
+        
+        return dataloader
+    
     def save_processed_data(self, data_splits, save_path, batch_size):
         """Save processed data to disk"""
         os.makedirs(save_path, exist_ok=True)
@@ -307,7 +369,7 @@ def verify_metadata(saved_path , new_metadata:dict):
 
 def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder', 'lightning']='thunder', batch_size=4, train_size=0.8, 
                                sequence_length=16, max_videos=None,
-                               load_processed=None, save_processed=None, random_state=None, pool_frames=False):
+                               load_processed=None, save_processed=None, random_state=None, pool_frames=False, output_format:Literal['pytorch', 'tensorflow']='pytorch'):
 
     print("=== Preparing data for Train/Validation Split ===")
     loader = VideoDataLoader(dataset_path, movenet_variant=movenet_variant, sequence_length=sequence_length, pool_frames=pool_frames)
@@ -355,15 +417,30 @@ def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder
             print("Saving processed data...")
             loader.save_processed_data(data_splits, save_processed, batch_size)
     
-    train_dataset = loader.create_tensorflow_dataset(
-        X_train, y_pose_train, 
-        batch_size=batch_size, shuffle=True
-    )
+    if output_format == 'tensorflow':
+        train_dataset = loader.create_tensorflow_dataset(
+            X_train, y_pose_train, 
+            batch_size=batch_size, shuffle=True
+        )
+        
+        val_dataset = loader.create_tensorflow_dataset(
+            X_val, y_pose_val,
+            batch_size=batch_size, shuffle=False
+        )
     
-    val_dataset = loader.create_tensorflow_dataset(
-        X_val, y_pose_val,
-        batch_size=batch_size, shuffle=False
-    )
+    elif output_format == 'pytorch':
+        train_dataset = loader.create_pytorch_dataloader(
+            X_train, y_pose_train, 
+            batch_size=batch_size, shuffle=True
+        )
+        
+        val_dataset = loader.create_pytorch_dataloader(
+            X_val, y_pose_val,
+            batch_size=batch_size, shuffle=False
+        )
+    
+    else:
+        raise ValueError('Unsupported output format.')
     
     print(f"Train/Val datasets created: {len(X_train)} train, {len(X_val)} val samples")
     return train_dataset, val_dataset, loader.num_poses, loader
@@ -374,13 +451,13 @@ if __name__ == "__main__":
         # Test regular training approach
         print("Testing train/val split approach:")
         train_ds, val_ds, num_poses, loader = create_train_val_dataloaders(
-            "dataset",
+            dataset_path="dataset",
             movenet_variant='thunder', 
             batch_size=16,
-            sequence_length=64, 
+            sequence_length=256, 
             max_videos=None,
             save_processed="thunder_data",
-            pool_frames=True
+            pool_frames=False
         )
         
         print(f"\nDataset info:")

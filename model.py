@@ -236,6 +236,12 @@ class STGCNModel(nn.Module):
         Args:
             x: (batch_size, in_channels, time_steps, num_joints)
         """
+        # Handle TensorFlow tensors (convert to PyTorch)
+        if not isinstance(x, torch.Tensor) and hasattr(x, 'numpy'):  # TensorFlow tensor
+            x = torch.from_numpy(x.numpy()).float()
+            if torch.cuda.is_available():
+                x = x.cuda()
+        
         batch_size, channels, time_steps, num_joints = x.size()
         
         # Data normalization
@@ -389,6 +395,10 @@ class VideoModel:
             train_total = 0
             
             for batch_x, batch_y in train_loader:
+                # Move batch to device
+                batch_x = batch_x.to(self.device)
+                batch_y = batch_y.to(self.device)
+                
                 self.optimizer.zero_grad()
                 
                 # Forward pass
@@ -438,6 +448,10 @@ class VideoModel:
         
         with torch.no_grad():
             for batch_x, batch_y in val_loader:
+                # Move batch to device
+                batch_x = batch_x.to(self.device)
+                batch_y = batch_y.to(self.device)
+                
                 outputs = self.model(batch_x)
                 loss = self.criterion(outputs, batch_y)
                 
