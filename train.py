@@ -4,7 +4,7 @@ import json
 from ingestion import create_train_val_dataloaders
 from model import VideoModel
 from typing import Literal
-
+import numpy as np
 
 def save_training_config(config, model_dir):
     """Save training configuration"""
@@ -18,7 +18,7 @@ def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_len
                       num_poses, learning_rate, model_dir, max_videos, pool_frames,
                       movenet_variant: Literal['thunder', 'lightning']='thunder') -> VideoModel:
     
-    input_shape = (sequence_length, 51) if not pool_frames else (51,)
+    input_shape = (3, sequence_length) if not pool_frames else (3,)
     num_joints = 17  
 
     model = VideoModel(
@@ -46,7 +46,7 @@ def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_len
     return model
 
 def save_model(model: VideoModel, dir):
-        path = os.path.join(dir, f'{model.model.name}.pt')
+        path = os.path.join(dir, f'{model.model.__class__.__name__}.pt')
         model.model.save(path)
         print(f'Saved {model.model.name} to {path}')
 
@@ -102,8 +102,19 @@ def train_model(dataset_path,
             save_processed=save_processed,
             load_processed=load_processed,
             random_state= random_state,
-            pool_frames=pool_frames
+            pool_frames=pool_frames,
+            output_format='pytorch'
         )
+
+    train_x = np.load(r'thunder_data\train_x.npy')
+    train_y = np.load(r'thunder_data\train_y.npy')
+    val_x = np.load(r'thunder_data\val_x.npy')
+    val_y = np.load(r'thunder_data\val_y.npy')
+
+    print(f"Shape of train data: {train_x.shape}")
+    print(f"Shape of val data: {val_x.shape}")
+
+    del train_dataset, val_dataset, loader
     
     try:          
         model = instantiate_model(dataset_path=dataset_path, 
@@ -119,8 +130,8 @@ def train_model(dataset_path,
                                   pool_frames=pool_frames)
         
         training_result = model.fit(
-                    x=train_dataset,
-                    validation_data=val_dataset,
+                    x=train_x, y= train_y,
+                    validation_data=(val_x, val_y),
                     epochs=epochs,
                     verbose=True,
                 )

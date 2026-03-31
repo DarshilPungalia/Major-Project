@@ -148,7 +148,8 @@ class VideoDataLoader:
             kp = np.array(kp[0, 0])
             video_keypoints.append(kp)
 
-        video_keypoints = np.array(video_keypoints).reshape((3, 256, 17))
+        video_keypoints = np.array(video_keypoints)
+        video_keypoints = video_keypoints.transpose(2, 0, 1)
 
         return video_keypoints
     
@@ -192,7 +193,7 @@ class VideoDataLoader:
         y_pose = np.array(y_pose)
 
         if self.pool_frames:
-            X = X.mean(axis=1)  
+            X = X.mean(axis=2)  
             print(f"Frame-pooled data shape: {X.shape}")
         
         print(f"Loaded {len(X)} videos successfully")
@@ -449,7 +450,7 @@ def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder
 if __name__ == "__main__":
     try:
         # Test regular training approach
-        print("Testing train/val split approach:")
+        print("Creating train/val split approach:")
         train_ds, val_ds, num_poses, loader = create_train_val_dataloaders(
             dataset_path="dataset",
             movenet_variant='thunder', 

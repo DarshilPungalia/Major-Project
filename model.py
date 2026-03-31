@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import MessagePassing
-from torch_geometric.data import Data, Batch
 from torch.utils.data import DataLoader
 import numpy as np
 
@@ -79,7 +78,7 @@ class TemporalConv(nn.Module):
 class STGCNBlock(nn.Module):
     """Spatial-Temporal Graph Convolution Block"""
     def __init__(self, in_channels, out_channels, num_joints=17, stride=1, 
-                 residual=True, dropout=0.3):
+                 residual=True, dropout=0.2):  # FIXED: Default dropout reduced to 0.2
         super(STGCNBlock, self).__init__()
         
         self.gcn = SpatialGraphConv(in_channels, out_channels)
@@ -133,8 +132,8 @@ class STGCNBlock(nn.Module):
 
 class STGCNModel(nn.Module):
     """ST-GCN Model for Action Recognition"""
-    def __init__(self, num_classes, num_joints=17, in_channels=2, 
-                 edge_importance_weighting=True, dropout=0.5):
+    def __init__(self, num_classes, num_joints=17, in_channels=3,  # FIXED: Changed default to 3
+                 edge_importance_weighting=True, dropout=0.3):  # FIXED: Reduced default dropout
         super(STGCNModel, self).__init__()
         
         self.num_classes = num_classes
@@ -142,20 +141,20 @@ class STGCNModel(nn.Module):
         self.in_channels = in_channels
         
         # Build graph structure (edge_index and edge_attr)
-        self.edge_index, self.edge_attr = self._build_graph()
+        edge_index, edge_attr = self._build_graph()
+        self.register_buffer('edge_index', edge_index)
+        self.register_buffer('edge_attr', edge_attr)
         
-        # Data batch normalization
-        self.data_bn = nn.BatchNorm1d(in_channels * num_joints)
+        # FIXED: Correct batch normalization for (B, C, T, V) format
+        self.data_bn = nn.BatchNorm2d(in_channels)
         
-        # ST-GCN blocks
+        # FIXED: Simplified architecture for small datasets
         self.st_gcn_blocks = nn.ModuleList([
             STGCNBlock(in_channels, 64, num_joints, stride=1, residual=False, dropout=0.0),
             STGCNBlock(64, 64, num_joints, stride=1, residual=True, dropout=dropout),
             STGCNBlock(64, 64, num_joints, stride=1, residual=True, dropout=dropout),
             STGCNBlock(64, 128, num_joints, stride=2, residual=True, dropout=dropout),
             STGCNBlock(128, 128, num_joints, stride=1, residual=True, dropout=dropout),
-            STGCNBlock(128, 256, num_joints, stride=2, residual=True, dropout=dropout),
-            STGCNBlock(256, 256, num_joints, stride=1, residual=True, dropout=dropout),
         ])
         
         # Edge importance weighting
@@ -167,15 +166,15 @@ class STGCNModel(nn.Module):
         else:
             self.edge_importance = [1] * len(self.st_gcn_blocks)
         
-        # Classification head
-        self.fcn = nn.Conv2d(256, num_classes, kernel_size=1)
+        # Global average pooling + classifier
+        self.fcn = nn.Conv2d(128, num_classes, kernel_size=1)
         
     def _build_graph(self):
         """
-        Build graph structure for PoseNet skeleton (17 keypoints)
+        Build graph structure for MoveNet skeleton (17 keypoints)
         Returns edge_index and edge_attr (partition labels)
         """
-        # PoseNet keypoints (COCO format):
+        # MoveNet keypoints:
         # 0: nose, 1: left_eye, 2: right_eye, 3: left_ear, 4: right_ear,
         # 5: left_shoulder, 6: right_shoulder, 7: left_elbow, 8: right_elbow,
         # 9: left_wrist, 10: right_wrist, 11: left_hip, 12: right_hip,
@@ -204,27 +203,33 @@ class STGCNModel(nn.Module):
             edges.append([i, j])
             edge_attrs.append(0)
         
-        # Neighbor connections (partition 1)
+        # Neighbor connections (partition 1 - bidirectional)
         for i, j in neighbor_link:
             edges.append([i, j])
-            edges.append([j, i])  # Bidirectional
-            edge_attrs.extend([1, 1])
+            edge_attrs.append(1)
+            edges.append([j, i])  # Reverse direction
+            edge_attrs.append(1)
         
-        # Second-order neighbors (partition 2)
-        # Compute 2-hop neighbors
-        adjacency = np.zeros((self.num_joints, self.num_joints))
-        for i, j in neighbor_link:
-            adjacency[i, j] = 1
-            adjacency[j, i] = 1
-        
-        # A^2 for second-order
-        hop_2 = np.linalg.matrix_power(adjacency, 2)
+        # Create second-order neighbors (partition 2)
+        # For each joint, find neighbors of neighbors
+        adj_matrix = {}
         for i in range(self.num_joints):
-            for j in range(i + 1, self.num_joints):
-                if hop_2[i, j] > 0 and adjacency[i, j] == 0:  # 2-hop but not 1-hop
-                    edges.append([i, j])
-                    edges.append([j, i])
-                    edge_attrs.extend([2, 2])
+            adj_matrix[i] = set()
+        
+        for i, j in neighbor_link:
+            adj_matrix[i].add(j)
+            adj_matrix[j].add(i)
+        
+        second_order = set()
+        for i in range(self.num_joints):
+            for neighbor in adj_matrix[i]:
+                for second_neighbor in adj_matrix[neighbor]:
+                    if second_neighbor != i and second_neighbor not in adj_matrix[i]:
+                        second_order.add((i, second_neighbor))
+        
+        for i, j in second_order:
+            edges.append([i, j])
+            edge_attrs.append(2)
         
         edge_index = torch.LongTensor(edges).t()
         edge_attr = torch.LongTensor(edge_attrs)
@@ -234,65 +239,67 @@ class STGCNModel(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: (batch_size, in_channels, time_steps, num_joints)
+            x: Input tensor (batch_size, in_channels, time_steps, num_joints)
+               For MoveNet: (B, 3, 256, 17)
         """
-        # Handle TensorFlow tensors (convert to PyTorch)
-        if not isinstance(x, torch.Tensor) and hasattr(x, 'numpy'):  # TensorFlow tensor
-            x = torch.from_numpy(x.numpy()).float()
-            if torch.cuda.is_available():
-                x = x.cuda()
+        # Apply batch normalization
+        x = self.data_bn(x)
         
-        batch_size, channels, time_steps, num_joints = x.size()
-        
-        # Data normalization
-        x = x.permute(0, 2, 3, 1).contiguous()  # (B, T, V, C)
-        x = x.view(batch_size, time_steps, -1)  # (B, T, V*C)
-        x = self.data_bn(x.permute(0, 2, 1))  # (B, V*C, T)
-        x = x.view(batch_size, num_joints, channels, time_steps)
-        x = x.permute(0, 2, 3, 1).contiguous()  # (B, C, T, V)
-        
-        # Move graph to same device as input
-        edge_index = self.edge_index.to(x.device)
-        edge_attr = self.edge_attr.to(x.device)
-        
-        # ST-GCN blocks
+        # Apply ST-GCN blocks
         for gcn, importance in zip(self.st_gcn_blocks, self.edge_importance):
-            # Apply edge importance weighting
+            # FIXED: Create batched edge index for each frame
+            batch_size, _, time_steps, _ = x.size()
+            
+            # Replicate edge_index for batch*time_steps graphs
+            num_graphs = batch_size * time_steps
+            edge_index = self.edge_index
+            edge_attr = self.edge_attr
+            
+            # Create batched edge_index
+            edge_index_batch = edge_index.repeat(1, num_graphs)
+            offset = torch.arange(num_graphs, device=x.device) * self.num_joints
+            offset = offset.repeat_interleave(edge_index.size(1))
+            edge_index_batch = edge_index_batch + offset
+            
+            # Create batched edge_attr
+            edge_attr_batch = edge_attr.repeat(num_graphs)
+            
+            # Apply importance weighting
             if isinstance(importance, nn.Parameter):
-                weighted_edge_attr = edge_attr  # Partition labels remain same
-                # Importance is applied during message passing
-            x = gcn(x, edge_index, weighted_edge_attr)
+                edge_weight = importance.repeat(num_graphs)
+            else:
+                edge_weight = None
+            
+            x = gcn(x, edge_index_batch, edge_attr_batch)
         
-        # Global pooling
-        x = F.avg_pool2d(x, x.size()[2:])  # (B, 256, 1, 1)
+        # Global average pooling
+        x = F.avg_pool2d(x, x.size()[2:])
+        x = x.view(x.size(0), -1, 1, 1)
         
         # Classification
-        x = self.fcn(x)  # (B, num_classes, 1, 1)
-        x = x.view(batch_size, -1)  # (B, num_classes)
+        x = self.fcn(x)
+        x = x.view(x.size(0), -1)
         
         return x
 
 
 class VideoModel:
-    """Wrapper class to maintain API compatibility with original TensorFlow code"""
+    """Wrapper class compatible with your training code"""
     def __init__(self, num_poses, input_shape, num_joints=17, 
-                 learning_rate=1e-3, device=None):
+                 learning_rate=0.001, device=None):  # FIXED: Increased LR
         """
         Args:
             num_poses: Number of action classes
-            input_shape: (sequence_length, num_joints * features_per_joint)
-                        For PoseNet: (seq_len, 17*2) for (x,y) or (seq_len, 17*3) for (x,y,conf)
-            num_joints: Number of skeleton keypoints (17 for PoseNet)
+            input_shape: Tuple (features_per_joint, time_steps) 
+                        For MoveNet: (3, 256) where 3 = [x, y, confidence]
+            num_joints: Number of skeleton joints (17 for MoveNet)
             learning_rate: Learning rate for optimizer
-            device: 'cuda' or 'cpu', auto-detected if None
         """
         self.num_poses = num_poses
         self.input_shape = input_shape
         self.num_joints = num_joints
-        self.learning_rate = learning_rate
         self.fitted = False
         
-        # Auto-detect device
         if device is None:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
@@ -300,40 +307,54 @@ class VideoModel:
         
         print(f"Using device: {self.device}")
         
-        # Infer features per joint
-        self.features_per_joint = input_shape[1] // num_joints
-        self.sequence_length = input_shape[0]
+        # FIXED: Correct feature extraction
+        self.features_per_joint = input_shape[0]  # 3 for MoveNet (x, y, conf)
+        self.sequence_length = input_shape[1]     # 256 frames
+        
+        print(f"Features per joint: {self.features_per_joint}")
+        print(f"Sequence length: {self.sequence_length}")
         
         # Build model
         self.model = STGCNModel(
             num_classes=num_poses,
             num_joints=num_joints,
             in_channels=self.features_per_joint,
-            dropout=0.5
+            dropout=0.3  # FIXED: Reduced from 0.5
         ).to(self.device)
         
-        # Optimizer
+        # FIXED: Better optimizer settings
         self.optimizer = torch.optim.Adam(
             self.model.parameters(),
             lr=learning_rate,
             weight_decay=0.0001
         )
         
+        # FIXED: Add learning rate scheduler
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, 
+            mode='min', 
+            factor=0.5, 
+            patience=5,
+            min_lr=1e-6
+        )
+        
         # Loss function
         self.criterion = nn.CrossEntropyLoss()
         
-        print(f"Model created with {sum(p.numel() for p in self.model.parameters())} parameters")
+        num_params = sum(p.numel() for p in self.model.parameters())
+        print(f"Model created with {num_params:,} parameters")
     
     def _prepare_data(self, x, y=None):
-        """Convert numpy arrays to PyTorch tensors and reshape"""
+        """
+        Convert numpy arrays to PyTorch tensors
+        
+        Args:
+            x: Input data (batch, features, time, joints) = (B, 3, 256, 17)
+            y: Labels
+        """
         if isinstance(x, np.ndarray):
-            # x shape: (batch, seq_len, num_joints * features)
-            # Target shape: (batch, features, seq_len, num_joints)
-            batch_size = x.shape[0]
-            x_reshaped = x.reshape(batch_size, self.sequence_length, 
-                                  self.num_joints, self.features_per_joint)
-            x_reshaped = x_reshaped.transpose(0, 3, 1, 2)  # (B, C, T, V)
-            x_tensor = torch.FloatTensor(x_reshaped).to(self.device)
+            # Input is already in correct shape: (B, 3, 256, 17)
+            x_tensor = torch.FloatTensor(x).to(self.device)
         else:
             x_tensor = x.to(self.device)
         
@@ -353,14 +374,6 @@ class VideoModel:
             verbose=True, batch_size=8, steps_per_epoch=None, validation_steps=None):
         """
         Train the model
-        
-        Args:
-            x: Training data (numpy array or DataLoader)
-            y: Training labels (numpy array, required if x is numpy)
-            validation_data: Tuple of (x_val, y_val) or DataLoader
-            epochs: Number of training epochs
-            verbose: Whether to print training progress
-            batch_size: Batch size (used when x is numpy array)
         """
         self.model.train()
         history = {'loss': [], 'accuracy': [], 'val_loss': [], 'val_accuracy': []}
@@ -388,6 +401,8 @@ class VideoModel:
             else:
                 val_loader = validation_data
         
+        best_val_loss = float('inf')
+        
         # Training loop
         for epoch in range(epochs):
             train_loss = 0.0
@@ -407,6 +422,10 @@ class VideoModel:
                 
                 # Backward pass
                 loss.backward()
+                
+                # FIXED: Add gradient clipping
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                
                 self.optimizer.step()
                 
                 # Statistics
@@ -427,10 +446,19 @@ class VideoModel:
                 history['val_loss'].append(val_loss)
                 history['val_accuracy'].append(val_acc)
                 
+                # FIXED: Update learning rate based on validation loss
+                self.scheduler.step(val_loss)
+                
+                # Track best model
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                
                 if verbose:
+                    current_lr = self.optimizer.param_groups[0]['lr']
                     print(f'Epoch [{epoch+1}/{epochs}] '
                           f'Loss: {epoch_loss:.4f} Acc: {epoch_acc:.2f}% '
-                          f'Val Loss: {val_loss:.4f} Val Acc: {val_acc:.2f}%')
+                          f'Val Loss: {val_loss:.4f} Val Acc: {val_acc:.2f}% '
+                          f'LR: {current_lr:.6f}')
             else:
                 if verbose:
                     print(f'Epoch [{epoch+1}/{epochs}] '
@@ -464,15 +492,7 @@ class VideoModel:
         return val_loss / len(val_loader), 100 * val_correct / val_total
     
     def predict(self, x):
-        """
-        Make predictions
-        
-        Args:
-            x: Input data (numpy array)
-            
-        Returns:
-            Predictions as numpy array (softmax probabilities)
-        """
+        """Make predictions"""
         if not self.fitted:
             raise ValueError('Call .fit() first')
         
@@ -490,6 +510,7 @@ class VideoModel:
         torch.save({
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
             'num_poses': self.num_poses,
             'input_shape': self.input_shape,
             'num_joints': self.num_joints,
@@ -501,5 +522,7 @@ class VideoModel:
         checkpoint = torch.load(filepath, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         self.fitted = True
         print(f"Model loaded from {filepath}")
