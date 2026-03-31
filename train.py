@@ -47,8 +47,8 @@ def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_len
 
 def save_model(model: VideoModel, dir):
         path = os.path.join(dir, f'{model.model.__class__.__name__}.pt')
-        model.model.save(path)
-        print(f'Saved {model.model.name} to {path}')
+        model.save(path)
+        print(f'Saved {model.model.__class__.__name__} to {path}')
 
 def train_model(dataset_path, 
                 batch_size=4, 
@@ -105,16 +105,6 @@ def train_model(dataset_path,
             pool_frames=pool_frames,
             output_format='pytorch'
         )
-
-    train_x = np.load(r'thunder_data\train_x.npy')
-    train_y = np.load(r'thunder_data\train_y.npy')
-    val_x = np.load(r'thunder_data\val_x.npy')
-    val_y = np.load(r'thunder_data\val_y.npy')
-
-    print(f"Shape of train data: {train_x.shape}")
-    print(f"Shape of val data: {val_x.shape}")
-
-    del train_dataset, val_dataset, loader
     
     try:          
         model = instantiate_model(dataset_path=dataset_path, 
@@ -130,10 +120,12 @@ def train_model(dataset_path,
                                   pool_frames=pool_frames)
         
         training_result = model.fit(
-                    x=train_x, y= train_y,
-                    validation_data=(val_x, val_y),
+                    x=train_dataset,
+                    validation_data=val_dataset,
                     epochs=epochs,
                     verbose=True,
+                    early_stopping_patience=6,
+                    early_stopping_monitor='val_loss'
                 )
         
         final_results = training_result    

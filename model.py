@@ -370,13 +370,32 @@ class VideoModel:
         
         return x_tensor
     
-    def fit(self, x, y=None, validation_data=None, epochs=10, 
-            verbose=True, batch_size=8, steps_per_epoch=None, validation_steps=None):
+    def fit(self, x, y=None, validation_data=None, epochs=10,
+            verbose=True, batch_size=8, steps_per_epoch=None, validation_steps=None,
+            early_stopping_patience=None, early_stopping_monitor='val_loss'):
         """
-        Train the model
+        Train the model.
+
+        Args:
+            early_stopping_patience: Number of epochs with no improvement after which
+                training will be stopped. None disables early stopping.
+            early_stopping_monitor: Metric to monitor for early stopping.
+                One of 'val_loss', 'val_accuracy', 'val_precision', 'val_recall'.
         """
         self.model.train()
-        history = {'loss': [], 'accuracy': [], 'val_loss': [], 'val_accuracy': []}
+        history = {
+            'loss': [], 'accuracy': [],
+            'val_loss': [], 'val_accuracy': [],
+            'val_precision': [], 'val_recall': [],
+        }
+
+        # Early stopping state
+        es_patience = early_stopping_patience
+        es_best = float('inf') if 'loss' in early_stopping_monitor else -float('inf')
+        es_counter = 0
+        es_improve = (lambda cur, best: cur < best) if 'loss' in early_stopping_monitor \
+            else (lambda cur, best: cur > best)
+        best_model_state = None
         
         # Prepare data
         if isinstance(x, np.ndarray):
@@ -400,8 +419,6 @@ class VideoModel:
                 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
             else:
                 val_loader = validation_data
-        
-        best_val_loss = float('inf')
         
         # Training loop
         for epoch in range(epochs):
@@ -442,23 +459,48 @@ class VideoModel:
             
             # Validation
             if validation_data is not None:
-                val_loss, val_acc = self._validate(val_loader)
+                val_loss, val_acc, val_prec, val_rec = self._validate(val_loader)
                 history['val_loss'].append(val_loss)
                 history['val_accuracy'].append(val_acc)
-                
-                # FIXED: Update learning rate based on validation loss
+                history['val_precision'].append(val_prec)
+                history['val_recall'].append(val_rec)
+
+                # Update learning rate based on validation loss
                 self.scheduler.step(val_loss)
-                
-                # Track best model
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                
+
                 if verbose:
                     current_lr = self.optimizer.param_groups[0]['lr']
                     print(f'Epoch [{epoch+1}/{epochs}] '
                           f'Loss: {epoch_loss:.4f} Acc: {epoch_acc:.2f}% '
                           f'Val Loss: {val_loss:.4f} Val Acc: {val_acc:.2f}% '
+                          f'Val Prec: {val_prec:.4f} Val Rec: {val_rec:.4f} '
                           f'LR: {current_lr:.6f}')
+
+                # Early stopping
+                if es_patience is not None:
+                    metric_map = {
+                        'val_loss': val_loss, 'val_accuracy': val_acc,
+                        'val_precision': val_prec, 'val_recall': val_rec,
+                    }
+                    current_metric = metric_map[early_stopping_monitor]
+                    if es_improve(current_metric, es_best):
+                        es_best = current_metric
+                        es_counter = 0
+                        best_model_state = {
+                            k: v.cpu().clone() for k, v in self.model.state_dict().items()
+                        }
+                    else:
+                        es_counter += 1
+                        if verbose:
+                            print(f'  Early stopping counter: {es_counter}/{es_patience}')
+                        if es_counter >= es_patience:
+                            if verbose:
+                                print(f'Early stopping triggered after epoch {epoch+1}.')
+                            if best_model_state is not None:
+                                self.model.load_state_dict(
+                                    {k: v.to(self.device) for k, v in best_model_state.items()}
+                                )
+                            break
             else:
                 if verbose:
                     print(f'Epoch [{epoch+1}/{epochs}] '
@@ -468,28 +510,52 @@ class VideoModel:
         return history
     
     def _validate(self, val_loader):
-        """Validate the model"""
+        """Validate the model. Returns loss, accuracy, macro precision, macro recall."""
         self.model.eval()
         val_loss = 0.0
-        val_correct = 0
-        val_total = 0
-        
+        all_preds = []
+        all_labels = []
+
         with torch.no_grad():
             for batch_x, batch_y in val_loader:
-                # Move batch to device
                 batch_x = batch_x.to(self.device)
                 batch_y = batch_y.to(self.device)
-                
+
                 outputs = self.model(batch_x)
                 loss = self.criterion(outputs, batch_y)
-                
                 val_loss += loss.item()
+
                 _, predicted = torch.max(outputs.data, 1)
-                val_total += batch_y.size(0)
-                val_correct += (predicted == batch_y).sum().item()
-        
+                all_preds.append(predicted.cpu())
+                all_labels.append(batch_y.cpu())
+
+        all_preds = torch.cat(all_preds)
+        all_labels = torch.cat(all_labels)
+
+        num_classes = self.num_poses
+        tp = torch.zeros(num_classes)
+        fp = torch.zeros(num_classes)
+        fn = torch.zeros(num_classes)
+
+        for c in range(num_classes):
+            pred_c = (all_preds == c)
+            true_c = (all_labels == c)
+            tp[c] = (pred_c & true_c).sum().float()
+            fp[c] = (pred_c & ~true_c).sum().float()
+            fn[c] = (~pred_c & true_c).sum().float()
+
+        precision_per_class = tp / (tp + fp + 1e-8)
+        recall_per_class = tp / (tp + fn + 1e-8)
+
+        macro_precision = precision_per_class.mean().item()
+        macro_recall = recall_per_class.mean().item()
+
+        val_correct = (all_preds == all_labels).sum().item()
+        val_total = all_labels.size(0)
+        val_acc = 100 * val_correct / val_total
+
         self.model.train()
-        return val_loss / len(val_loader), 100 * val_correct / val_total
+        return val_loss / len(val_loader), val_acc, macro_precision, macro_recall
     
     def predict(self, x):
         """Make predictions"""
