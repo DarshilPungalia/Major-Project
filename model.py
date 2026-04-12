@@ -345,27 +345,18 @@ class VideoModel:
         print(f"Model created with {num_params:,} parameters")
     
     def _prepare_data(self, x, y=None):
-        """
-        Convert numpy arrays to PyTorch tensors
-        
-        Args:
-            x: Input data (batch, features, time, joints) = (B, 3, 256, 17)
-            y: Labels
-        """
         if isinstance(x, np.ndarray):
-            # Input is already in correct shape: (B, 3, 256, 17)
-            x_tensor = torch.FloatTensor(x).to(self.device)
+            x_tensor = torch.FloatTensor(x)  
         else:
-            x_tensor = x.to(self.device)
+            x_tensor = x
         
         if y is not None:
             if isinstance(y, np.ndarray):
-                # Convert one-hot to class indices if needed
                 if len(y.shape) > 1 and y.shape[1] > 1:
                     y = np.argmax(y, axis=1)
-                y_tensor = torch.LongTensor(y).to(self.device)
+                y_tensor = torch.LongTensor(y)  
             else:
-                y_tensor = y.to(self.device)
+                y_tensor = y
             return x_tensor, y_tensor
         
         return x_tensor

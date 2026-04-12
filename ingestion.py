@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 import os
 import tensorflow as tf
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from collections import Counter
 import pickle
 from typing import Literal
@@ -216,50 +216,27 @@ class VideoDataLoader:
         min_samples_per_class = min(label_counts.values())
         min_val_samples = max(1, int(len(X) * val_size))
         
-        use_stratification = (min_samples_per_class >= 2 and 
-                             min_val_samples >= num_classes and 
-                             len(X) > num_classes * 2)
-        
-        if not use_stratification:
-            print(f"\nWarning: Dataset too small for stratified splitting.")
-            print(f"  Total samples: {len(X)}, Classes: {num_classes}")
-            print(f"  Min samples per class: {min_samples_per_class}")
-            print("Falling back to random splitting without stratification.")
-            
-            if len(X) < 2:
-                raise ValueError(f"Dataset too small ({len(X)} samples) to create train/val split")
-            
-            # Use random splitting instead of stratified
+        # Try stratified split first
+        try:
+            if min_samples_per_class >= 2 and len(X) >= num_classes * 2:
+                X_train, X_val, y_pose_train, y_pose_val = train_test_split(
+                    X, y_pose, 
+                    train_size=train_size,
+                    stratify=y_pose,
+                    random_state=random_state
+                )
+            else:
+                raise ValueError("Too few samples for stratified split")
+                
+        except ValueError as e:
+            print(f"Stratified split failed: {e}")
+            print("Falling back to random split...")
             X_train, X_val, y_pose_train, y_pose_val = train_test_split(
                 X, y_pose,
                 train_size=train_size,
                 random_state=random_state
             )
-        else:
-            print(f"\nUsing stratified splitting (min {min_samples_per_class} samples per class).")
-            
-            try:
-                X_train, X_val, y_pose_train, y_pose_val = train_test_split(
-                    X, y_pose,
-                    train_size=train_size,
-                    stratify=y_pose,
-                    random_state=random_state
-                )
-            except ValueError as e:
-                print(f"Stratified split failed: {e}")
-                print("Falling back to random splitting...")
-                X_train, X_val, y_pose_train, y_pose_val = train_test_split(
-                    X, y_pose,
-                    train_size=train_size,
-                    random_state=random_state
-                )
         
-        # Print split statistics
-        print(f"\nDataset split:")
-        print(f"  Train: {len(X_train)} videos")
-        print(f"  Val: {len(X_val)} videos")
-        
-        # Print class distribution
         self._print_split_distribution(y_pose_train, "Train")
         self._print_split_distribution(y_pose_val, "Val")
         
@@ -267,6 +244,40 @@ class VideoDataLoader:
             'train': (X_train, y_pose_train),
             'val': (X_val, y_pose_val)
         }
+    
+    def create_kfold_splits(self, X, y_pose, n_splits=5, random_state=None):
+        """Create k-fold cross-validation splits"""
+        print(f"\n=== Creating {n_splits}-fold cross-validation splits ===")
+        
+        label_counts = Counter(y_pose)
+        print("\nLabel distribution:")
+        for label, count in sorted(label_counts.items()):
+            print(f"  {label}: {count} videos")
+        
+        # Check if we can do stratified k-fold
+        min_samples = min(label_counts.values())
+        if min_samples < n_splits:
+            print(f"\nWarning: Minimum samples per class ({min_samples}) < n_splits ({n_splits})")
+            print("Some folds may not contain all classes. Consider reducing n_splits.")
+        
+        # Create stratified k-fold
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+        
+        folds = []
+        for fold_idx, (train_idx, val_idx) in enumerate(skf.split(X, y_pose)):
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y_pose[train_idx], y_pose[val_idx]
+            
+            print(f"\nFold {fold_idx + 1}:")
+            self._print_split_distribution(y_train, "Train")
+            self._print_split_distribution(y_val, "Val")
+            
+            folds.append({
+                'train': (X_train, y_train),
+                'val': (X_val, y_val)
+            })
+        
+        return folds
     
     def _print_split_distribution(self, y_pose, split_name):
         """Print class distribution for a data split"""
@@ -445,6 +456,92 @@ def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder
     
     print(f"Train/Val datasets created: {len(X_train)} train, {len(X_val)} val samples")
     return train_dataset, val_dataset, loader.num_poses, loader
+
+
+def create_kfold_dataloaders(dataset_path, movenet_variant: Literal['thunder', 'lightning']='thunder', 
+                             batch_size=4, n_splits=5, sequence_length=16, max_videos=None,
+                             load_processed=None, save_processed=None, random_state=None, 
+                             pool_frames=False, output_format:Literal['pytorch', 'tensorflow']='pytorch'):
+    """
+    Create k-fold cross-validation dataloaders
+    
+    Returns:
+        list of dicts: Each dict contains 'train' and 'val' dataloaders for one fold
+        int: Number of pose classes
+        VideoDataLoader: The data loader object
+    """
+    print("=== Preparing data for K-Fold Cross-Validation ===")
+    loader = VideoDataLoader(dataset_path, movenet_variant=movenet_variant, 
+                            sequence_length=sequence_length, pool_frames=pool_frames)
+
+    pose_names = sorted(os.listdir(dataset_path))
+    
+    metadata = {
+        'num_poses': len(pose_names),
+        'pose_names': pose_names,
+        'sequence_length': sequence_length,
+        'movenet_variant': movenet_variant,
+        'batch_size': batch_size,
+        'pool_frames': pool_frames,
+        'n_splits': n_splits
+    }
+    
+    # Load or create data
+    if load_processed and os.path.exists(load_processed):
+        print("Loading processed data from disk...")
+        data_splits = loader.load_processed_data(load_processed)
+        
+        if 'full' in data_splits:
+            X, y_pose = data_splits['full']
+        else:
+            raise ValueError("Full dataset not found in processed files. K-fold requires full dataset.")
+    else:
+        print("Loading videos from disk...")
+        X, y_pose = loader.load_all_videos(max_videos=max_videos)
+        
+        if save_processed:
+            print("Saving full processed data...")
+            full_data = {'full': (X, y_pose)}
+            loader.save_processed_data(full_data, save_processed, batch_size)
+    
+    # Create k-fold splits
+    folds = loader.create_kfold_splits(X, y_pose, n_splits=n_splits, random_state=random_state)
+    
+    # Convert to dataloaders
+    fold_dataloaders = []
+    for fold_idx, fold_data in enumerate(folds):
+        X_train, y_train = fold_data['train']
+        X_val, y_val = fold_data['val']
+        
+        if output_format == 'tensorflow':
+            train_loader = loader.create_tensorflow_dataset(
+                X_train, y_train, 
+                batch_size=batch_size, shuffle=True
+            )
+            val_loader = loader.create_tensorflow_dataset(
+                X_val, y_val,
+                batch_size=batch_size, shuffle=False
+            )
+        elif output_format == 'pytorch':
+            train_loader = loader.create_pytorch_dataloader(
+                X_train, y_train, 
+                batch_size=batch_size, shuffle=True
+            )
+            val_loader = loader.create_pytorch_dataloader(
+                X_val, y_val,
+                batch_size=batch_size, shuffle=False
+            )
+        else:
+            raise ValueError('Unsupported output format.')
+        
+        fold_dataloaders.append({
+            'train': train_loader,
+            'val': val_loader
+        })
+        
+        print(f"Fold {fold_idx + 1}: {len(X_train)} train, {len(X_val)} val samples")
+    
+    return fold_dataloaders, loader.num_poses, loader
 
 
 if __name__ == "__main__":
