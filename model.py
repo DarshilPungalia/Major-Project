@@ -371,13 +371,14 @@ class VideoModel:
             early_stopping_patience: Number of epochs with no improvement after which
                 training will be stopped. None disables early stopping.
             early_stopping_monitor: Metric to monitor for early stopping.
-                One of 'val_loss', 'val_accuracy', 'val_precision', 'val_recall'.
+                One of 'val_loss', 'val_accuracy', 'val_precision', 'val_recall', 'val_balanced_accuracy'.
         """
         self.model.train()
         history = {
             'loss': [], 'accuracy': [],
             'val_loss': [], 'val_accuracy': [],
             'val_precision': [], 'val_recall': [],
+            'val_balanced_accuracy': [],
         }
 
         # Early stopping state
@@ -450,11 +451,12 @@ class VideoModel:
             
             # Validation
             if validation_data is not None:
-                val_loss, val_acc, val_prec, val_rec = self._validate(val_loader)
+                val_loss, val_acc, val_prec, val_rec, val_bal_acc = self._validate(val_loader)
                 history['val_loss'].append(val_loss)
                 history['val_accuracy'].append(val_acc)
                 history['val_precision'].append(val_prec)
                 history['val_recall'].append(val_rec)
+                history['val_balanced_accuracy'].append(val_bal_acc)
 
                 # Update learning rate based on validation loss
                 self.scheduler.step(val_loss)
@@ -465,6 +467,7 @@ class VideoModel:
                           f'Loss: {epoch_loss:.4f} Acc: {epoch_acc:.2f}% '
                           f'Val Loss: {val_loss:.4f} Val Acc: {val_acc:.2f}% '
                           f'Val Prec: {val_prec:.4f} Val Rec: {val_rec:.4f} '
+                          f'Val Bal Acc: {val_bal_acc:.4f} '
                           f'LR: {current_lr:.6f}')
 
                 # Early stopping
@@ -472,6 +475,7 @@ class VideoModel:
                     metric_map = {
                         'val_loss': val_loss, 'val_accuracy': val_acc,
                         'val_precision': val_prec, 'val_recall': val_rec,
+                        'val_balanced_accuracy': val_bal_acc,
                     }
                     current_metric = metric_map[early_stopping_monitor]
                     if es_improve(current_metric, es_best):
@@ -501,7 +505,7 @@ class VideoModel:
         return history
     
     def _validate(self, val_loader):
-        """Validate the model. Returns loss, accuracy, macro precision, macro recall."""
+        """Validate the model. Returns loss, accuracy, macro precision, macro recall, balanced accuracy."""
         self.model.eval()
         val_loss = 0.0
         all_preds = []
@@ -540,13 +544,16 @@ class VideoModel:
 
         macro_precision = precision_per_class.mean().item()
         macro_recall = recall_per_class.mean().item()
+        
+        # Balanced accuracy is the average of recall per class
+        balanced_accuracy = recall_per_class.mean().item()
 
         val_correct = (all_preds == all_labels).sum().item()
         val_total = all_labels.size(0)
         val_acc = 100 * val_correct / val_total
 
         self.model.train()
-        return val_loss / len(val_loader), val_acc, macro_precision, macro_recall
+        return val_loss / len(val_loader), val_acc, macro_precision, macro_recall, balanced_accuracy
     
     def predict(self, x):
         """Make predictions"""
