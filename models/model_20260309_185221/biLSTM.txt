@@ -1,0 +1,9 @@
+Final training results:
+accuracy: 0.9256
+loss: 0.3400
+precision: 0.9565
+recall: 0.9091
+val_accuracy: 0.9355
+val_loss: 0.4426
+val_precision: 0.9355
+val_recall: 0.9355

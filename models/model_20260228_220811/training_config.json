@@ -1,0 +1,14 @@
+{
+  "dataset_path": "dataset",
+  "batch_size": 8,
+  "epochs": 16,
+  "train_size": 0.8,
+  "max_videos": null,
+  "sequence_length": 64,
+  "num_poses": 6,
+  "input_shape": [
+    51
+  ],
+  "learning_rate": 0.001,
+  "movenet_variant": "thunder"
+}

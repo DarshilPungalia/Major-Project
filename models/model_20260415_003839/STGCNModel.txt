@@ -1,0 +1,96 @@
+Epoch [1/50] Loss: 1.9185 Acc: 29.44% Val Loss: 1.6868 Val Acc: 39.68% Val Prec: 0.2583 Val Rec: 0.3185 Val Bal Acc: 0.3185 LR: 0.001000
+Epoch [2/50] Loss: 1.5190 Acc: 41.94% Val Loss: 1.3423 Val Acc: 50.79% Val Prec: 0.4824 Val Rec: 0.5163 Val Bal Acc: 0.5163 LR: 0.001000
+Epoch [3/50] Loss: 1.3096 Acc: 52.42% Val Loss: 1.2432 Val Acc: 55.56% Val Prec: 0.4815 Val Rec: 0.5353 Val Bal Acc: 0.5353 LR: 0.001000
+Epoch [4/50] Loss: 1.4045 Acc: 49.60% Val Loss: 1.5793 Val Acc: 44.44% Val Prec: 0.5024 Val Rec: 0.4484 Val Bal Acc: 0.4484 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [5/50] Loss: 1.1467 Acc: 54.03% Val Loss: 0.9383 Val Acc: 65.08% Val Prec: 0.6330 Val Rec: 0.6106 Val Bal Acc: 0.6106 LR: 0.001000
+Epoch [6/50] Loss: 1.2004 Acc: 54.84% Val Loss: 0.9157 Val Acc: 58.73% Val Prec: 0.5633 Val Rec: 0.5795 Val Bal Acc: 0.5795 LR: 0.001000
+Epoch [7/50] Loss: 1.0439 Acc: 60.08% Val Loss: 0.9976 Val Acc: 65.08% Val Prec: 0.5712 Val Rec: 0.6255 Val Bal Acc: 0.6255 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [8/50] Loss: 1.0225 Acc: 61.29% Val Loss: 0.8839 Val Acc: 65.08% Val Prec: 0.5610 Val Rec: 0.5781 Val Bal Acc: 0.5781 LR: 0.001000
+Epoch [9/50] Loss: 0.9805 Acc: 62.50% Val Loss: 0.9589 Val Acc: 60.32% Val Prec: 0.6550 Val Rec: 0.5980 Val Bal Acc: 0.5980 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [10/50] Loss: 1.0004 Acc: 63.31% Val Loss: 0.5747 Val Acc: 80.95% Val Prec: 0.7688 Val Rec: 0.7701 Val Bal Acc: 0.7701 LR: 0.001000
+Epoch [11/50] Loss: 0.9649 Acc: 63.71% Val Loss: 0.6530 Val Acc: 77.78% Val Prec: 0.7212 Val Rec: 0.7835 Val Bal Acc: 0.7835 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [12/50] Loss: 0.8142 Acc: 64.92% Val Loss: 0.6692 Val Acc: 69.84% Val Prec: 0.6917 Val Rec: 0.6675 Val Bal Acc: 0.6675 LR: 0.001000
+  Early stopping counter: 2/10
+Epoch [13/50] Loss: 0.8509 Acc: 62.90% Val Loss: 0.6679 Val Acc: 73.02% Val Prec: 0.7004 Val Rec: 0.6835 Val Bal Acc: 0.6835 LR: 0.001000
+  Early stopping counter: 3/10
+Epoch [14/50] Loss: 0.9600 Acc: 61.29% Val Loss: 0.5591 Val Acc: 74.60% Val Prec: 0.6859 Val Rec: 0.7177 Val Bal Acc: 0.7177 LR: 0.001000
+Epoch [15/50] Loss: 0.8334 Acc: 68.15% Val Loss: 0.8542 Val Acc: 71.43% Val Prec: 0.7110 Val Rec: 0.6654 Val Bal Acc: 0.6654 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [16/50] Loss: 0.8558 Acc: 69.35% Val Loss: 0.6615 Val Acc: 77.78% Val Prec: 0.6556 Val Rec: 0.7035 Val Bal Acc: 0.7035 LR: 0.001000
+  Early stopping counter: 2/10
+Epoch [17/50] Loss: 0.9089 Acc: 68.95% Val Loss: 0.7236 Val Acc: 74.60% Val Prec: 0.7489 Val Rec: 0.7130 Val Bal Acc: 0.7130 LR: 0.001000
+  Early stopping counter: 3/10
+Epoch [18/50] Loss: 0.7604 Acc: 72.18% Val Loss: 0.7630 Val Acc: 68.25% Val Prec: 0.6763 Val Rec: 0.6372 Val Bal Acc: 0.6372 LR: 0.001000
+  Early stopping counter: 4/10
+Epoch [19/50] Loss: 0.8606 Acc: 74.19% Val Loss: 0.7787 Val Acc: 73.02% Val Prec: 0.8138 Val Rec: 0.7234 Val Bal Acc: 0.7234 LR: 0.001000
+  Early stopping counter: 5/10
+Epoch [20/50] Loss: 0.7707 Acc: 72.18% Val Loss: 0.4008 Val Acc: 90.48% Val Prec: 0.9019 Val Rec: 0.9095 Val Bal Acc: 0.9095 LR: 0.001000
+Epoch [21/50] Loss: 0.7167 Acc: 73.79% Val Loss: 0.3990 Val Acc: 87.30% Val Prec: 0.8879 Val Rec: 0.8641 Val Bal Acc: 0.8641 LR: 0.001000
+Epoch [22/50] Loss: 0.6076 Acc: 77.02% Val Loss: 0.4210 Val Acc: 85.71% Val Prec: 0.8770 Val Rec: 0.8684 Val Bal Acc: 0.8684 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [23/50] Loss: 0.5475 Acc: 79.44% Val Loss: 0.3232 Val Acc: 88.89% Val Prec: 0.8795 Val Rec: 0.8969 Val Bal Acc: 0.8969 LR: 0.001000
+Epoch [24/50] Loss: 0.5000 Acc: 80.24% Val Loss: 0.9131 Val Acc: 77.78% Val Prec: 0.8295 Val Rec: 0.7639 Val Bal Acc: 0.7639 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [25/50] Loss: 0.5905 Acc: 78.23% Val Loss: 0.4524 Val Acc: 84.13% Val Prec: 0.8633 Val Rec: 0.8450 Val Bal Acc: 0.8450 LR: 0.001000
+  Early stopping counter: 2/10
+Epoch [26/50] Loss: 0.6134 Acc: 77.02% Val Loss: 0.3474 Val Acc: 87.30% Val Prec: 0.9141 Val Rec: 0.8377 Val Bal Acc: 0.8377 LR: 0.001000
+  Early stopping counter: 3/10
+Epoch [27/50] Loss: 0.5066 Acc: 84.27% Val Loss: 0.4044 Val Acc: 84.13% Val Prec: 0.8530 Val Rec: 0.8338 Val Bal Acc: 0.8338 LR: 0.001000
+  Early stopping counter: 4/10
+Epoch [28/50] Loss: 0.4545 Acc: 82.66% Val Loss: 0.2820 Val Acc: 88.89% Val Prec: 0.9021 Val Rec: 0.8719 Val Bal Acc: 0.8719 LR: 0.001000
+Epoch [29/50] Loss: 0.4425 Acc: 82.26% Val Loss: 0.6106 Val Acc: 85.71% Val Prec: 0.8813 Val Rec: 0.8532 Val Bal Acc: 0.8532 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [30/50] Loss: 0.4862 Acc: 81.05% Val Loss: 0.3321 Val Acc: 88.89% Val Prec: 0.8917 Val Rec: 0.8846 Val Bal Acc: 0.8846 LR: 0.001000
+  Early stopping counter: 2/10
+Epoch [31/50] Loss: 0.4630 Acc: 83.47% Val Loss: 0.3590 Val Acc: 90.48% Val Prec: 0.8974 Val Rec: 0.9082 Val Bal Acc: 0.9082 LR: 0.001000
+  Early stopping counter: 3/10
+Epoch [32/50] Loss: 0.4361 Acc: 85.48% Val Loss: 0.2580 Val Acc: 90.48% Val Prec: 0.9254 Val Rec: 0.8801 Val Bal Acc: 0.8801 LR: 0.001000
+Epoch [33/50] Loss: 0.3490 Acc: 89.11% Val Loss: 0.5014 Val Acc: 84.13% Val Prec: 0.7540 Val Rec: 0.7913 Val Bal Acc: 0.7913 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [34/50] Loss: 0.4610 Acc: 87.10% Val Loss: 0.4023 Val Acc: 82.54% Val Prec: 0.7873 Val Rec: 0.7835 Val Bal Acc: 0.7835 LR: 0.001000
+  Early stopping counter: 2/10
+Epoch [35/50] Loss: 0.4355 Acc: 86.29% Val Loss: 0.3753 Val Acc: 90.48% Val Prec: 0.9355 Val Rec: 0.9147 Val Bal Acc: 0.9147 LR: 0.001000
+  Early stopping counter: 3/10
+Epoch [36/50] Loss: 0.3806 Acc: 85.48% Val Loss: 0.4816 Val Acc: 82.54% Val Prec: 0.8871 Val Rec: 0.8333 Val Bal Acc: 0.8333 LR: 0.001000
+  Early stopping counter: 4/10
+Epoch [37/50] Loss: 0.2942 Acc: 89.11% Val Loss: 0.2948 Val Acc: 90.48% Val Prec: 0.9163 Val Rec: 0.8983 Val Bal Acc: 0.8983 LR: 0.001000
+  Early stopping counter: 5/10
+Epoch [38/50] Loss: 0.3906 Acc: 84.27% Val Loss: 0.2115 Val Acc: 95.24% Val Prec: 0.9545 Val Rec: 0.9589 Val Bal Acc: 0.9589 LR: 0.001000
+Epoch [39/50] Loss: 0.3755 Acc: 87.10% Val Loss: 0.4067 Val Acc: 90.48% Val Prec: 0.9138 Val Rec: 0.8974 Val Bal Acc: 0.8974 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [40/50] Loss: 0.3074 Acc: 88.71% Val Loss: 0.3333 Val Acc: 88.89% Val Prec: 0.8832 Val Rec: 0.8944 Val Bal Acc: 0.8944 LR: 0.001000
+  Early stopping counter: 2/10
+Epoch [41/50] Loss: 0.2956 Acc: 89.11% Val Loss: 0.2875 Val Acc: 90.48% Val Prec: 0.8367 Val Rec: 0.8628 Val Bal Acc: 0.8628 LR: 0.001000
+  Early stopping counter: 3/10
+Epoch [42/50] Loss: 0.3322 Acc: 91.13% Val Loss: 0.2131 Val Acc: 92.06% Val Prec: 0.9263 Val Rec: 0.9225 Val Bal Acc: 0.9225 LR: 0.001000
+  Early stopping counter: 4/10
+Epoch [43/50] Loss: 0.2163 Acc: 94.35% Val Loss: 0.2225 Val Acc: 92.06% Val Prec: 0.9144 Val Rec: 0.9255 Val Bal Acc: 0.9255 LR: 0.001000
+  Early stopping counter: 5/10
+Epoch [44/50] Loss: 0.1738 Acc: 93.95% Val Loss: 0.1597 Val Acc: 95.24% Val Prec: 0.9610 Val Rec: 0.9589 Val Bal Acc: 0.9589 LR: 0.001000
+Epoch [45/50] Loss: 0.1751 Acc: 94.35% Val Loss: 0.3622 Val Acc: 88.89% Val Prec: 0.9167 Val Rec: 0.9211 Val Bal Acc: 0.9211 LR: 0.001000
+  Early stopping counter: 1/10
+Epoch [46/50] Loss: 0.2654 Acc: 93.55% Val Loss: 0.2672 Val Acc: 93.65% Val Prec: 0.9515 Val Rec: 0.9333 Val Bal Acc: 0.9333 LR: 0.001000
+  Early stopping counter: 2/10
+Epoch [47/50] Loss: 0.2216 Acc: 92.74% Val Loss: 0.1819 Val Acc: 93.65% Val Prec: 0.9529 Val Rec: 0.9286 Val Bal Acc: 0.9286 LR: 0.001000
+  Early stopping counter: 3/10
+Epoch [48/50] Loss: 0.1907 Acc: 93.15% Val Loss: 0.1802 Val Acc: 95.24% Val Prec: 0.9567 Val Rec: 0.9567 Val Bal Acc: 0.9567 LR: 0.001000
+  Early stopping counter: 4/10
+Epoch [49/50] Loss: 0.2341 Acc: 91.94% Val Loss: 0.2248 Val Acc: 93.65% Val Prec: 0.9356 Val Rec: 0.9234 Val Bal Acc: 0.9234 LR: 0.001000
+  Early stopping counter: 5/10
+Epoch [50/50] Loss: 0.3116 Acc: 90.32% Val Loss: 0.2275 Val Acc: 93.65% Val Prec: 0.9340 Val Rec: 0.9481 Val Bal Acc: 0.9481 LR: 0.000500
+  Early stopping counter: 6/10
+
+
+
+Final training results:
+loss: 0.3116
+accuracy: 90.3226
+val_loss: 0.2275
+val_accuracy: 93.6508
+val_precision: 0.9340
+val_recall: 0.9481
+val_balanced_accuracy: 0.9481
