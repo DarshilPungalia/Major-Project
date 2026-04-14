@@ -17,8 +17,7 @@ def save_training_config(config, model_dir):
 
 def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_length, 
                       num_poses, learning_rate, model_dir, max_videos, pool_frames,
-                      movenet_variant: Literal['thunder', 'lightning']='thunder',
-                      n_splits=None) -> VideoModel:
+                      movenet_variant: Literal['thunder', 'lightning']='thunder') -> VideoModel:
     
     input_shape = (3, sequence_length) if not pool_frames else (3,)
     num_joints = 17  
@@ -155,7 +154,7 @@ def train_single_split(dataset_path, batch_size, epochs, train_size, learning_ra
             validation_data=val_dataset,
             epochs=epochs,
             verbose=True,
-            early_stopping_patience=6,
+            early_stopping_patience=10,
             early_stopping_monitor='val_loss'
         )
         
@@ -198,7 +197,7 @@ def main():
         batch_size=16,
         train_size=0.8,
         sequence_length=256,
-        learning_rate=1e-4,
+        learning_rate=1e-3,
         max_videos=None,
         load_processed="thunder_data",  
         save_processed="thunder_data",

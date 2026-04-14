@@ -25,21 +25,48 @@ class PoseDataset(Dataset):
 class Timer:
     def __init__(self, func):
         self.func = func
-        self.exec_time = None
-    
+        self._exec_times = {}  # WeakKeyDictionary-style: keyed by owner instance id
+
+    @property
+    def exec_time(self):
+        # When accessed on the Timer directly (unbound), return None
+        return None
+
     def __call__(self, *args, **kwargs):
         s = perf_counter()
         result = self.func(*args, **kwargs)
         e = perf_counter()
-        self.exec_time = e - s
+        self._exec_times[id(self)] = e - s
         return result
-    
+
     def __get__(self, obj, objtype=None):
         """Support instance methods by implementing descriptor protocol"""
         if obj is None:
             return self
         import types
-        return types.MethodType(self, obj)
+        bound = types.MethodType(self, obj)
+        # Attach a per-instance exec_time property via a small wrapper
+        wrapper = _BoundTimer(self, obj)
+        return wrapper
+
+
+class _BoundTimer:
+    """Wrapper returned by Timer.__get__ that tracks exec_time per owner instance."""
+    def __init__(self, timer: 'Timer', obj):
+        self._timer = timer
+        self._obj = obj
+        self._key = id(obj)
+
+    def __call__(self, *args, **kwargs):
+        s = perf_counter()
+        result = self._timer.func(self._obj, *args, **kwargs)
+        e = perf_counter()
+        self._timer._exec_times[self._key] = e - s
+        return result
+
+    @property
+    def exec_time(self):
+        return self._timer._exec_times.get(self._key)
 
 class VideoDataLoader:
     def __init__(self, dataset_path, sequence_length=16, movenet_variant: Literal['thunder', 'lightning']='thunder', pool_frames=True, output_dir=None):
@@ -61,32 +88,84 @@ class VideoDataLoader:
     
 
     def _load_dataset_info(self):
-        """Load dataset structure and file paths"""
-        # Check for existing data and skip those
-        if self.output_dir and os.path.isdir(self.output_dir) and os.listdir(self.output_dir) != 0:
-            with open(os.path.join(self.output_dir, 'metadata.pkl'), 'rb') as f:
-                metadata = pickle.load(f)
-
-        # Get pose folders
-        pose_folders = sorted([f for f in os.listdir(self.dataset_path) 
-                              if os.path.isdir(os.path.join(self.dataset_path, f))])
+        """Load dataset structure and file paths.
         
-        self.pose_names = pose_folders
-        self.num_poses = len(pose_folders)
-                
-        for pose_idx, pose_name in enumerate(pose_folders):
+        If output_dir already contains a partial/full run, previously processed
+        video paths are loaded from metadata so load_all_videos can skip them.
+        """
+        # Restore the set of already-processed video paths (empty by default).
+        # 'processed_poses' always stores full video paths for fine-grained
+        # checkpointing; we derive completed *pose folder names* from those paths
+        # for backward-compatible coarse skipping (see below).
+        self.processed_poses: set[str] = set()
+
+        metadata_path = (
+            os.path.join(self.output_dir, 'metadata.pkl')
+            if self.output_dir else None
+        )
+        if (
+            metadata_path
+            and os.path.isfile(metadata_path)
+        ):
+            try:
+                with open(metadata_path, 'rb') as f:
+                    metadata = pickle.load(f)
+                self.processed_poses = set(metadata.get('processed_poses', []))
+                if self.processed_poses:
+                    print(
+                        f"Resuming: {len(self.processed_poses)} video(s) already "
+                        f"processed and will be skipped."
+                    )
+            except (pickle.UnpicklingError, EOFError, KeyError) as e:
+                print(f"Warning: could not read existing metadata ({e}). Starting fresh.")
+                self.processed_poses = set()
+
+        # Derive completed pose *folder names* from the stored video paths.
+        # A pose folder is considered complete when every video file inside it
+        # appears in processed_poses.  This comparison is purely by folder name
+        # so it works with both old checkpoints (that stored folder names) and
+        # new ones (that store video paths).
+        all_pose_folders = sorted([f for f in os.listdir(self.dataset_path)
+                                   if os.path.isdir(os.path.join(self.dataset_path, f))])
+
+        # Build a helper: pose_name -> set of all its video paths on disk
+        pose_to_videos: dict[str, set[str]] = {}
+        for pose_name in all_pose_folders:
             pose_path = os.path.join(self.dataset_path, pose_name)
-                     
-            video_files = [f for f in os.listdir(pose_path) 
-                          if f.endswith(('.mp4', '.avi', '.mov', '.mkv'))]
-                
+            pose_to_videos[pose_name] = {
+                os.path.join(pose_path, f)
+                for f in os.listdir(pose_path)
+                if f.endswith(('.mp4', '.avi', '.mov', '.mkv'))
+            }
+
+        # A pose is fully done when ALL its videos are in processed_poses.
+        completed_pose_names: set[str] = {
+            name
+            for name, vids in pose_to_videos.items()
+            if vids and vids.issubset(self.processed_poses)
+        }
+
+        # Only queue poses that are NOT fully completed yet.
+        pose_folders = [f for f in all_pose_folders if f not in completed_pose_names]
+
+        self.pose_names = all_pose_folders   # full list preserved for label consistency
+        self.num_poses = len(all_pose_folders)
+
+        for pose_idx, pose_name in enumerate(all_pose_folders):
+            if pose_name in completed_pose_names:
+                continue                     # every video already in checkpoint
+            pose_path = os.path.join(self.dataset_path, pose_name)
+            video_files = [f for f in os.listdir(pose_path)
+                           if f.endswith(('.mp4', '.avi', '.mov', '.mkv'))]
             for video_file in video_files:
                 video_path = os.path.join(pose_path, video_file)
                 self.videos.append(video_path)
                 self.pose_labels.append(pose_idx)
-        
-        
-        print(f"Found {len(self.videos)} videos")
+
+        pending = len(self.videos)
+        print(f"Found {len(all_pose_folders)} pose(s) total, "
+              f"{len(completed_pose_names)} fully processed, "
+              f"{len(pose_folders)} pending ({pending} video(s) to process)")
         print(f"Poses ({self.num_poses}): {self.pose_names}")
     
     @Timer
@@ -110,7 +189,11 @@ class VideoDataLoader:
             # Resize and convert to RGB
             frame = cv2.resize(frame, self.target_size)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = frame.astype(np.int32) 
+            # MoveNet lightning expects uint8; thunder expects int32
+            if self.movenet_variant == 'lightning':
+                frame = frame.astype(np.uint8)
+            else:
+                frame = frame.astype(np.int32)
             frames.append(frame)
         
         cap.release()
@@ -136,7 +219,7 @@ class VideoDataLoader:
             'thunder': './movenet/singlepose-thunder/4'
         }
 
-        path = variant_to_path.get(movenet_variant, 'thunder')
+        path = variant_to_path.get(movenet_variant, variant_to_path['thunder'])
         model = tf.saved_model.load(path)
 
         return model
@@ -159,53 +242,216 @@ class VideoDataLoader:
         return video_keypoints
     
     def load_all_videos(self, max_videos=None):
-        """Load all videos into numpy arrays"""
+        """Load all videos into numpy arrays, skipping already-processed ones.
+
+        Previously processed keypoints are loaded from output_dir and merged
+        with any newly extracted ones so the final arrays are always complete.
+        """
         if max_videos:
             video_paths = self.videos[:max_videos]
             pose_labels = self.pose_labels[:max_videos]
         else:
             video_paths = self.videos
             pose_labels = self.pose_labels
-        
-        X = []
-        y_pose = []
 
-        etkp_time = 0
-        lf_time = 0
-        
-        print(f"Loading {len(video_paths)} videos...")
-        
-        for i, video_path in enumerate(video_paths):
+        # ------------------------------------------------------------------ #
+        # Load cached keypoints that were saved in a previous (partial) run.  #
+        # ------------------------------------------------------------------ #
+        cache_X: list = []
+        cache_y: list = []
+
+        cache_path = (
+            os.path.join(self.output_dir, 'partial_X.npy')
+            if self.output_dir else None
+        )
+        cache_y_path = (
+            os.path.join(self.output_dir, 'partial_y.npy')
+            if self.output_dir else None
+        )
+        if (
+            cache_path and os.path.isfile(cache_path)
+            and cache_y_path and os.path.isfile(cache_y_path)
+            and self.processed_poses
+        ):
+            try:
+                cache_X = np.load(cache_path, allow_pickle=False)
+                cache_y = np.load(cache_y_path, allow_pickle=False)
+                print(f"Loaded {cache_X.shape[0]} cached keypoint(s) from previous run.")
+            except Exception as e:
+                print(f"Warning: could not load cached keypoints ({e}). Re-processing all videos.")
+                cache_X, cache_y = [], []
+                self.processed_poses = set()
+
+        # ------------------------------------------------------------------ #
+        # Process only videos that haven't been handled yet.                  #
+        # ------------------------------------------------------------------ #
+        pending_paths  = [p for p in video_paths if p not in self.processed_poses]
+        pending_labels = [
+            pose_labels[i]
+            for i, p in enumerate(video_paths)
+            if p not in self.processed_poses
+        ]
+
+        X_new: list = []
+        y_new: list = []
+
+        etkp_time = 0.0
+        lf_time = 0.0
+
+        print(
+            f"Loading {len(pending_paths)} new video(s) "
+            f"({len(self.processed_poses)} poses skipped — already processed)..."
+        )
+
+        for i, video_path in enumerate(pending_paths):
             if i % 10 == 0:
-                print(f"Loading video {i+1}/{len(video_paths)}")
-                print(f"Extract Keypoints took {etkp_time}s for 10 Videos")
-                print(f"Loading Frames took {lf_time}s for 10 Videos")
-                etkp_time = 0
-                lf_time = 0
-                
+                print(f"Loading video {i+1}/{len(pending_paths)}")
+                print(f"Extract Keypoints took {etkp_time:.3f}s for last 10 videos")
+                print(f"Loading Frames   took {lf_time:.3f}s for last 10 videos")
+                etkp_time = 0.0
+                lf_time = 0.0
+
             try:
                 frames = self.load_video_frames(video_path)
                 keypoints = self.extract_keypoints(frames)
                 etkp_time += self.extract_keypoints.exec_time
                 lf_time += self.load_video_frames.exec_time
-                X.append(keypoints)
-                y_pose.append(pose_labels[i])
+                X_new.append(keypoints)
+                y_new.append(pending_labels[i])
+                self.processed_poses.add(video_path)
             except Exception as e:
                 print(f"Error loading {video_path}: {e}")
                 continue
-        
-        X = np.array(X)  
-        y_pose = np.array(y_pose)
+
+            # ---------------------------------------------------------------- #
+            # Incremental checkpoint every 10 videos so a crash only loses     #
+            # work done since the last checkpoint.                              #
+            # ---------------------------------------------------------------- #
+            if self.output_dir and (i + 1) % 10 == 0:
+                self._save_partial_progress(
+                    self._safe_concat_X(cache_X, X_new),
+                    self._safe_concat_y(cache_y, y_new),
+                )
+
+        # Final merge of cached + newly extracted data
+        if not X_new and not (isinstance(cache_X, np.ndarray) and cache_X.ndim == 4):
+            raise RuntimeError('No keypoints loaded — check dataset path and video files.')
+        X      = self._safe_concat_X(cache_X, X_new)
+        y_pose = self._safe_concat_y(cache_y, y_new)
+
+        # Persist the completed (or updated) partial cache
+        if self.output_dir and X_new:
+            self._save_partial_progress(X, y_pose)
 
         if self.pool_frames:
-            X = X.mean(axis=2)  
+            X = X.mean(axis=2)
             print(f"Frame-pooled data shape: {X.shape}")
-        
+
         print(f"Loaded {len(X)} videos successfully")
-        print(f"Video data shape: {X.shape}")
+        print(f"Video data shape:  {X.shape}")
         print(f"Pose labels shape: {y_pose.shape}")
-        
+
         return X, y_pose
+
+    # ------------------------------------------------------------------ #
+    # Safe concatenation helpers                                           #
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _safe_concat_X(cache_X, new_list: list) -> np.ndarray:
+        """Concatenate a cached 4-D ndarray with a list of new arrays.
+
+        Handles the three degenerate cases that previously caused the
+        ``ValueError: all input arrays must have same number of dimensions``
+        crash:
+          - cache empty (list), new_list has items
+          - cache is a valid ndarray, new_list is empty
+          - both have items
+        """
+        parts = []
+        if isinstance(cache_X, np.ndarray) and cache_X.ndim == 4:
+            parts.append(cache_X)
+        if new_list:
+            parts.append(np.array(new_list))   # uniform shape guaranteed by extract_keypoints
+        if not parts:
+            raise RuntimeError("No keypoint data available to concatenate.")
+        return np.concatenate(parts, axis=0)
+
+    @staticmethod
+    def _safe_concat_y(cache_y, new_list: list) -> np.ndarray:
+        parts = []
+        if isinstance(cache_y, np.ndarray) and cache_y.ndim >= 1:
+            parts.append(cache_y)
+        if new_list:
+            parts.append(np.array(new_list))
+        if not parts:
+            raise RuntimeError("No label data available to concatenate.")
+        return np.concatenate(parts, axis=0)
+
+    def load_dataset(self, max_videos=None):
+        """Return (X, y_pose) — from disk cache if complete, otherwise run pipeline.
+
+        Strategy
+        --------
+        1. If ``output_dir`` contains a finalised dataset (``full_X.npy`` /
+           ``full_y.npy`` **or** both ``train_X.npy`` + ``val_X.npy``) load and
+           return it directly, skipping the MoveNet pipeline entirely.
+        2. If ``output_dir`` contains a *partial* checkpoint (``partial_X.npy``),
+           ``load_all_videos`` will pick it up automatically and only process the
+           remaining videos.
+        3. If nothing is cached, run ``load_all_videos`` from scratch.
+
+        This is the recommended entry-point for callers that previously called
+        ``load_all_videos`` directly.
+        """
+        # ── 1. Complete finalised dataset ───────────────────────────────── #
+        if self.output_dir:
+            full_X_path = os.path.join(self.output_dir, 'full_X.npy')
+            full_y_path = os.path.join(self.output_dir, 'full_y.npy')
+            train_X_path = os.path.join(self.output_dir, 'train_X.npy')
+            val_X_path   = os.path.join(self.output_dir, 'val_X.npy')
+
+            if os.path.isfile(full_X_path) and os.path.isfile(full_y_path):
+                print(f"[load_dataset] Found complete dataset at '{self.output_dir}'. Loading from disk.")
+                X      = np.load(full_X_path, allow_pickle=False)
+                y_pose = np.load(full_y_path, allow_pickle=False)
+                print(f"[load_dataset] Loaded {len(X)} samples  shape={X.shape}")
+                return X, y_pose
+
+            if (os.path.isfile(train_X_path) and os.path.isfile(val_X_path)):
+                print(f"[load_dataset] Found split dataset at '{self.output_dir}'. Merging splits.")
+                X_train = np.load(train_X_path, allow_pickle=False)
+                y_train = np.load(os.path.join(self.output_dir, 'train_y.npy'), allow_pickle=False)
+                X_val   = np.load(val_X_path, allow_pickle=False)
+                y_val   = np.load(os.path.join(self.output_dir, 'val_y.npy'), allow_pickle=False)
+                X      = np.concatenate([X_train, X_val], axis=0)
+                y_pose = np.concatenate([y_train, y_val], axis=0)
+                print(f"[load_dataset] Merged {len(X)} samples  shape={X.shape}")
+                return X, y_pose
+
+        # ── 2 & 3. Partial checkpoint or cold start ──────────────────────── #
+        print("[load_dataset] No complete cache found — running extraction pipeline.")
+        return self.load_all_videos(max_videos=max_videos)
+
+    def _save_partial_progress(self, X: np.ndarray, y: np.ndarray):
+        """Checkpoint keypoints and the processed-video set to output_dir."""
+        if not self.output_dir:
+            return
+        os.makedirs(self.output_dir, exist_ok=True)
+        np.save(os.path.join(self.output_dir, 'partial_X.npy'), np.array(X))
+        np.save(os.path.join(self.output_dir, 'partial_y.npy'), np.array(y))
+        # Update only the 'processed_poses' key so we don't clobber any
+        # finalized split data that save_processed_data may have written.
+        metadata_path = os.path.join(self.output_dir, 'metadata.pkl')
+        existing: dict = {}
+        if os.path.isfile(metadata_path):
+            try:
+                with open(metadata_path, 'rb') as f:
+                    existing = pickle.load(f)
+            except Exception:
+                pass
+        existing['processed_poses'] = list(self.processed_poses)
+        with open(metadata_path, 'wb') as f:
+            pickle.dump(existing, f)
         
     def create_balanced_split(self, X, y_pose, train_size=0.8, random_state=None):
         """Create balanced train/val splits with fallback for small datasets"""
@@ -241,9 +487,6 @@ class VideoDataLoader:
                 train_size=train_size,
                 random_state=random_state
             )
-        
-        self._print_split_distribution(y_pose_train, "Train")
-        self._print_split_distribution(y_pose_val, "Val")
         
         return {
             'train': (X_train, y_pose_train),
@@ -291,12 +534,12 @@ class VideoDataLoader:
         
         metadata = {
             'num_poses': self.num_poses,
-            'pose_names': self.pose_names,
+            'pose_names': list(self.pose_names),
             'sequence_length': self.sequence_length,
             'movenet_variant': self.movenet_variant,
             'batch_size': batch_size,
             'pool_frames': self.pool_frames,
-            'train_size': self.train_size
+            'train_size': self.train_size,
         }
         
         with open(os.path.join(save_path, 'metadata.pkl'), 'wb') as f:
@@ -333,14 +576,22 @@ class VideoDataLoader:
         return data_splits
 
 
-def verify_metadata(saved_path , new_metadata:dict):
+def verify_metadata(saved_path, new_metadata: dict):
+    """Return True if the saved run used the same hyperparameters as new_metadata.
+
+    'processed_poses' is intentionally excluded from the comparison because it
+    changes between runs and is not a hyperparameter — including it would cause
+    a spurious cache-miss that throws away valid cached data.
+    """
+    _IGNORE_KEYS = {'processed_poses'}
+
     with open(os.path.join(saved_path, 'metadata.pkl'), 'rb') as f:
         saved_metadata = pickle.load(f)
 
-    if saved_metadata == new_metadata:
-        return True
-    
-    return False
+    saved_cmp = {k: v for k, v in saved_metadata.items() if k not in _IGNORE_KEYS}
+    new_cmp   = {k: v for k, v in new_metadata.items()   if k not in _IGNORE_KEYS}
+
+    return saved_cmp == new_cmp
 
 def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder', 'lightning']='thunder', batch_size=4, train_size=0.8, 
                                sequence_length=16, max_videos=None,
@@ -381,7 +632,7 @@ def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder
             raise ValueError("No suitable data found in processed files")
     else:
         print("Loading videos from disk...")
-        X, y_pose = loader.load_all_videos(max_videos=max_videos)
+        X, y_pose = loader.load_dataset(max_videos=max_videos)
         
         print("Creating balanced train/validation split...")
         data_splits = loader.create_balanced_split(X, y_pose, train_size, random_state)
@@ -440,7 +691,7 @@ if __name__ == "__main__":
         print(f"Pose names: {loader.pose_names}")
         
         print(f"\nTesting train dataset:")
-        for videos, labels in train_ds.take(1):
+        for videos, labels in train_ds:
             print(f"Videos shape: {videos.shape}")
             print(f"Pose labels shape: {labels.shape}")
             break
