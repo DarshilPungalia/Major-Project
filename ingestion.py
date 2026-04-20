@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 import os
-import tensorflow as tf
+import mediapipe as mp
 from sklearn.model_selection import train_test_split
 from collections import Counter
 import pickle
@@ -25,11 +25,10 @@ class PoseDataset(Dataset):
 class Timer:
     def __init__(self, func):
         self.func = func
-        self._exec_times = {}  # WeakKeyDictionary-style: keyed by owner instance id
+        self._exec_times = {}  
 
     @property
     def exec_time(self):
-        # When accessed on the Timer directly (unbound), return None
         return None
 
     def __call__(self, *args, **kwargs):
@@ -68,22 +67,41 @@ class _BoundTimer:
     def exec_time(self):
         return self._timer._exec_times.get(self._key)
 
+# MediaPipe keypoint confidence threshold — landmarks below this
+# visibility score are considered unreliable and trigger rejection logic.
+KEYPOINT_CONFIDENCE_THRESHOLD = 0.5
+
+# Minimum fraction of keypoints that must be above the threshold for a
+# frame to be considered "valid".  If fewer than this fraction are visible
+# the frame is marked as rejected and replaced by the nearest valid frame.
+MIN_VALID_KEYPOINT_FRACTION = 0.5   # i.e. at least 17 / 33 keypoints visible
+
+
 class VideoDataLoader:
-    def __init__(self, dataset_path, sequence_length=16, movenet_variant: Literal['thunder', 'lightning']='thunder', pool_frames=True, output_dir=None):
+    def __init__(self, dataset_path, sequence_length=16,
+                 mediapipe_model_complexity: int = 1,
+                 pool_frames=True, output_dir=None):
+        """
+        Args:
+            dataset_path: Root directory of the dataset.
+            sequence_length: Number of frames to sample per video.
+            mediapipe_model_complexity: MediaPipe Pose model complexity
+                (0 = lite, 1 = full, 2 = heavy).
+            pool_frames: Whether to temporally average keypoints after extraction.
+            output_dir: Directory for checkpoints / processed data.
+        """
         self.dataset_path = dataset_path
         self.sequence_length = sequence_length
-        self.movenet_variant = str.lower(movenet_variant)
+        self.mediapipe_model_complexity = mediapipe_model_complexity
         self.pool_frames = pool_frames
-        self.model = self._load_model(self.movenet_variant)
         self.output_dir = output_dir
-        self.target_size = None
         self.train_size = None
-        
+
         # Storage for data
         self.videos = []
         self.pose_labels = []
         self.pose_names = []
-        
+
         self._load_dataset_info()
     
 
@@ -170,75 +188,135 @@ class VideoDataLoader:
     
     @Timer
     def load_video_frames(self, video_path):
-        """Load and preprocess video frames"""
+        """Load and preprocess video frames for MediaPipe Pose.
+
+        Frames are decoded as uint8 RGB — MediaPipe handles its own
+        internal resizing so we keep frames at native resolution.
+        """
         cap = cv2.VideoCapture(video_path)
         frames = []
 
-        variant_to_size = {
-            'lightning': (192, 192),
-            'thunder': (256, 256)
-        }
-
-        self.target_size = variant_to_size.get(self.movenet_variant, (256, 256))
-        
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            
-            # Resize and convert to RGB
-            frame = cv2.resize(frame, self.target_size)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            # MoveNet lightning expects uint8; thunder expects int32
-            if self.movenet_variant == 'lightning':
-                frame = frame.astype(np.uint8)
-            else:
-                frame = frame.astype(np.int32)
+            # MediaPipe expects RGB uint8
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.uint8)
             frames.append(frame)
-        
+
         cap.release()
-        
-        # Handle sequence length
+
+        if not frames:
+            raise ValueError(f"No frames decoded from {video_path}")
+
+        # Sample / pad to self.sequence_length
         if len(frames) >= self.sequence_length:
-            # Sample frames evenly across the video
-            indices = np.linspace(0, len(frames)-1, self.sequence_length).astype(int)
+            indices = np.linspace(0, len(frames) - 1, self.sequence_length).astype(int)
             frames = [frames[i] for i in indices]
         else:
-            # Repeat last frame if not enough frames
             while len(frames) < self.sequence_length:
                 frames.append(frames[-1])
-        
-        frames = np.array(frames)  
-        
-        return frames
-    
+
+        return frames   # list of H×W×3 uint8 arrays
+
     @staticmethod
-    def _load_model(movenet_variant):
-        variant_to_path = {
-            'lightning': './movenet/singlepose-lightning/4',
-            'thunder': './movenet/singlepose-thunder/4'
-        }
+    def _load_model(mediapipe_model_complexity: int = 1):
+        """Instantiate a MediaPipe Pose estimator.
 
-        path = variant_to_path.get(movenet_variant, variant_to_path['thunder'])
-        model = tf.saved_model.load(path)
+        Returns the mp.solutions.pose.Pose object; the caller is
+        responsible for using it as a context manager or closing it.
+        """
+        pose = mp.solutions.pose.Pose(
+            static_image_mode=False,          # optimised for video streams
+            model_complexity=mediapipe_model_complexity,
+            smooth_landmarks=True,
+            enable_segmentation=False,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        return pose
 
-        return model
-    
     @Timer
-    def extract_keypoints(self, frames)-> np.ndarray:
-        movenet = self.model.signatures['serving_default']
-        video_keypoints = []
+    def extract_keypoints(self, frames) -> np.ndarray:
+        """Extract 33-keypoint MediaPipe Pose landmarks from a list of frames.
 
-        for frame in frames:
-            frame = tf.expand_dims(frame, axis=0)
-            output = movenet(frame)
-            kp = output['output_0']
-            kp = np.array(kp[0, 0])
-            video_keypoints.append(kp)
+        Confidence / rejection logic
+        ----------------------------
+        Each landmark carries a *visibility* score in [0, 1].  A frame is
+        deemed **valid** when at least ``MIN_VALID_KEYPOINT_FRACTION`` of
+        its 33 landmarks have visibility ≥ ``KEYPOINT_CONFIDENCE_THRESHOLD``.
 
-        video_keypoints = np.array(video_keypoints)
-        video_keypoints = video_keypoints.transpose(2, 0, 1)
+        Rejected frames are **imputed** by copying keypoints from the
+        nearest valid frame found by scanning forward then backward.
+        If *every* frame in the sequence is rejected the raw (low-confidence)
+        keypoints are kept and a warning is printed.
 
+        Returns
+        -------
+        np.ndarray of shape (3, T, 33)
+            Axis 0 — channels: [x_norm, y_norm, visibility]
+            Axis 1 — time steps
+            Axis 2 — keypoints (33 MediaPipe landmarks)
+        """
+        pose_estimator = self._load_model(self.mediapipe_model_complexity)
+
+        NUM_KP = 33
+        T = len(frames)
+        raw_kp   = np.zeros((T, NUM_KP, 3), dtype=np.float32)  # (T, 33, 3)
+        valid    = np.zeros(T, dtype=bool)
+
+        try:
+            for t, frame in enumerate(frames):
+                result = pose_estimator.process(frame)
+                if result.pose_landmarks:
+                    kp = np.array(
+                        [[lm.x, lm.y, lm.visibility]
+                         for lm in result.pose_landmarks.landmark],
+                        dtype=np.float32
+                    )  # (33, 3)
+                    # Apply per-keypoint threshold
+                    low_conf = kp[:, 2] < KEYPOINT_CONFIDENCE_THRESHOLD
+                    kp[low_conf, :2] = 0.0   # zero out unreliable positions
+                    visible_fraction = (~low_conf).mean()
+                    raw_kp[t] = kp
+                    valid[t] = visible_fraction >= MIN_VALID_KEYPOINT_FRACTION
+                else:
+                    # No pose detected — frame stays zeroed, marked invalid
+                    valid[t] = False
+        finally:
+            pose_estimator.close()
+
+        # ── Rejection / imputation logic ────────────────────────────────── #
+        num_rejected = int((~valid).sum())
+        if num_rejected > 0:
+            print(
+                f"  [MediaPipe] {num_rejected}/{T} frame(s) rejected "
+                f"(visibility < {KEYPOINT_CONFIDENCE_THRESHOLD:.0%}). "
+                "Imputing from nearest valid frame."
+            )
+
+        video_keypoints = raw_kp.copy()  # will be filled in-place
+
+        if valid.all():
+            pass  # nothing to impute
+        elif not valid.any():
+            # Edge case: every frame is below threshold — keep raw data
+            print(
+                "  [MediaPipe] WARNING: no valid frames found for this video. "
+                "Using raw (low-confidence) keypoints."
+            )
+        else:
+            # Build a lookup: for each frame index find the nearest valid idx
+            valid_indices = np.where(valid)[0]
+            for t in range(T):
+                if not valid[t]:
+                    # Find nearest valid frame (prefer forward, then backward)
+                    diffs = np.abs(valid_indices - t)
+                    nearest = valid_indices[np.argmin(diffs)]
+                    video_keypoints[t] = raw_kp[nearest]
+
+        # Transpose to (channels=3, time=T, joints=33)
+        video_keypoints = video_keypoints.transpose(2, 0, 1)  # (3, T, 33)
         return video_keypoints
     
     def load_all_videos(self, max_videos=None):
@@ -531,48 +609,52 @@ class VideoDataLoader:
     def save_processed_data(self, data_splits, save_path, batch_size):
         """Save processed data to disk"""
         os.makedirs(save_path, exist_ok=True)
-        
+
         metadata = {
             'num_poses': self.num_poses,
             'pose_names': list(self.pose_names),
             'sequence_length': self.sequence_length,
-            'movenet_variant': self.movenet_variant,
+            'mediapipe_model_complexity': self.mediapipe_model_complexity,
             'batch_size': batch_size,
             'pool_frames': self.pool_frames,
             'train_size': self.train_size,
         }
-        
+
         with open(os.path.join(save_path, 'metadata.pkl'), 'wb') as f:
             pickle.dump(metadata, f)
-        
+
         # Save data splits
         for split_name, (X, y) in data_splits.items():
             if X is not None:
                 np.save(os.path.join(save_path, f'{split_name}_X.npy'), X)
                 np.save(os.path.join(save_path, f'{split_name}_y.npy'), y)
-        
+
         print(f"Data saved to {save_path}")
     
     def load_processed_data(self, save_path):
         """Load processed data from disk"""
         with open(os.path.join(save_path, 'metadata.pkl'), 'rb') as f:
             metadata = pickle.load(f)
-        
+
         self.num_poses = metadata['num_poses']
         self.pose_names = metadata['pose_names']
         self.sequence_length = metadata['sequence_length']
-        self.movenet_variant = metadata['movenet_variant']
-        
+        # Support both old (movenet_variant) and new (mediapipe_model_complexity) keys
+        self.mediapipe_model_complexity = metadata.get(
+            'mediapipe_model_complexity',
+            metadata.get('movenet_variant', 1)   # graceful fallback
+        )
+
         data_splits = {}
         possible_splits = ['train', 'val', 'full']
-        
+
         for split_name in possible_splits:
             X_path = os.path.join(save_path, f'{split_name}_X.npy')
             if os.path.exists(X_path):
                 X = np.load(X_path)
                 y = np.load(os.path.join(save_path, f'{split_name}_y.npy'))
                 data_splits[split_name] = (X, y)
-        
+
         return data_splits
 
 
@@ -593,29 +675,63 @@ def verify_metadata(saved_path, new_metadata: dict):
 
     return saved_cmp == new_cmp
 
-def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder', 'lightning']='thunder', batch_size=4, train_size=0.8, 
-                               sequence_length=16, max_videos=None,
-                               load_processed=None, save_processed=None, random_state=None, pool_frames=False, output_format:Literal['pytorch', 'tensorflow']='pytorch'):
+def create_train_val_dataloaders(
+        dataset_path,
+        mediapipe_model_complexity: int = 1,
+        batch_size: int = 4,
+        train_size: float = 0.8,
+        sequence_length: int = 16,
+        max_videos=None,
+        load_processed=None,
+        save_processed=None,
+        random_state=None,
+        pool_frames: bool = False,
+        output_format: Literal['pytorch', 'tensorflow'] = 'pytorch',
+):
+    """Build train/val data-loaders using MediaPipe Pose (33 keypoints).
 
-    print("=== Preparing data for Train/Validation Split ===")
-    loader = VideoDataLoader(dataset_path, movenet_variant=movenet_variant, sequence_length=sequence_length, pool_frames=pool_frames, output_dir=save_processed)
+    Args:
+        dataset_path: Root directory of the dataset.
+        mediapipe_model_complexity: 0 (lite), 1 (full, default), 2 (heavy).
+        batch_size: Mini-batch size for the returned loader.
+        train_size: Fraction of data used for training.
+        sequence_length: Number of frames sampled per video.
+        max_videos: Cap on total videos processed (useful for debugging).
+        load_processed: Path to look for a cached processed dataset.
+        save_processed: Path where processed data (and checkpoints) are saved.
+        random_state: Seed for reproducible splits.
+        pool_frames: Temporally average keypoints when True.
+        output_format: 'pytorch' or 'tensorflow'.
+    """
+    print("=== Preparing data for Train/Validation Split (MediaPipe Pose) ===")
+    loader = VideoDataLoader(
+        dataset_path,
+        mediapipe_model_complexity=mediapipe_model_complexity,
+        sequence_length=sequence_length,
+        pool_frames=pool_frames,
+        output_dir=save_processed,
+    )
 
     pose_names = sorted(os.listdir(dataset_path))
-    
+
     metadata = {
-            'num_poses': len(pose_names),
-            'pose_names': pose_names,
-            'sequence_length': sequence_length,
-            'movenet_variant': movenet_variant,
-            'batch_size': batch_size,
-            'pool_frames': pool_frames,
-            'train_size': train_size
+        'num_poses': len(pose_names),
+        'pose_names': pose_names,
+        'sequence_length': sequence_length,
+        'mediapipe_model_complexity': mediapipe_model_complexity,
+        'batch_size': batch_size,
+        'pool_frames': pool_frames,
+        'train_size': train_size,
     }
-    
-    if load_processed and os.path.exists(load_processed) and verify_metadata(saved_path=load_processed, new_metadata=metadata):
+
+    if (
+        load_processed
+        and os.path.exists(load_processed)
+        and verify_metadata(saved_path=load_processed, new_metadata=metadata)
+    ):
         print("Loading processed data from disk...")
         data_splits = loader.load_processed_data(load_processed)
-        
+
         if 'train' in data_splits and 'val' in data_splits:
             X_train, y_pose_train = data_splits['train']
             X_val, y_pose_val = data_splits['val']
@@ -625,7 +741,6 @@ def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder
             data_splits = loader.create_balanced_split(X, y_pose, train_size, random_state)
             X_train, y_pose_train = data_splits['train']
             X_val, y_pose_val = data_splits['val']
-            
             if save_processed:
                 loader.save_processed_data(data_splits, save_processed, batch_size)
         else:
@@ -633,71 +748,65 @@ def create_train_val_dataloaders(dataset_path, movenet_variant: Literal['thunder
     else:
         print("Loading videos from disk...")
         X, y_pose = loader.load_dataset(max_videos=max_videos)
-        
+
         print("Creating balanced train/validation split...")
         data_splits = loader.create_balanced_split(X, y_pose, train_size, random_state)
         X_train, y_pose_train = data_splits['train']
         X_val, y_pose_val = data_splits['val']
-        
+
         if save_processed:
             print("Saving processed data...")
             loader.save_processed_data(data_splits, save_processed, batch_size)
-    
+
     if output_format == 'tensorflow':
+        from tensorflow import keras  # lazy import — only needed when requested  # noqa: F401
+        import tensorflow as tf
         train_dataset = loader.create_tensorflow_dataset(
-            X_train, y_pose_train, 
-            batch_size=batch_size, shuffle=True
+            X_train, y_pose_train, batch_size=batch_size, shuffle=True
         )
-        
         val_dataset = loader.create_tensorflow_dataset(
-            X_val, y_pose_val,
-            batch_size=batch_size, shuffle=False
+            X_val, y_pose_val, batch_size=batch_size, shuffle=False
         )
-    
     elif output_format == 'pytorch':
         train_dataset = loader.create_pytorch_dataloader(
-            X_train, y_pose_train, 
-            batch_size=batch_size, shuffle=True
+            X_train, y_pose_train, batch_size=batch_size, shuffle=True
         )
-        
         val_dataset = loader.create_pytorch_dataloader(
-            X_val, y_pose_val,
-            batch_size=batch_size, shuffle=False
+            X_val, y_pose_val, batch_size=batch_size, shuffle=False
         )
-    
     else:
         raise ValueError('Unsupported output format.')
-    
+
     print(f"Train/Val datasets created: {len(X_train)} train, {len(X_val)} val samples")
     return train_dataset, val_dataset, loader.num_poses, loader
 
 
 if __name__ == "__main__":
     try:
-        # Test regular training approach
-        print("Creating train/val split approach:")
+        # Test regular training approach with MediaPipe Pose
+        print("Creating train/val split approach (MediaPipe Pose):")
         train_ds, val_ds, num_poses, loader = create_train_val_dataloaders(
             dataset_path="dataset",
-            movenet_variant='thunder', 
+            mediapipe_model_complexity=1,   # 0=lite, 1=full, 2=heavy
             batch_size=16,
-            sequence_length=256, 
+            sequence_length=256,
             max_videos=None,
-            save_processed="thunder_data",
-            pool_frames=False
+            save_processed="mediapipe_data",
+            pool_frames=False,
         )
-        
+
         print(f"\nDataset info:")
         print(f"Number of poses: {num_poses}")
         print(f"Pose names: {loader.pose_names}")
-        
+
         print(f"\nTesting train dataset:")
         for videos, labels in train_ds:
             print(f"Videos shape: {videos.shape}")
             print(f"Pose labels shape: {labels.shape}")
             break
-            
-        print("\n" + "="*50)
-            
+
+        print("\n" + "=" * 50)
+
     except Exception as e:
         print(f"Error testing data loading: {e}")
         import traceback

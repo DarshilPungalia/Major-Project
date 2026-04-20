@@ -3,7 +3,6 @@ from datetime import datetime
 import json
 from ingestion import create_train_val_dataloaders
 from model import VideoModel
-from typing import Literal
 import numpy as np
 
 
@@ -17,10 +16,10 @@ def save_training_config(config, model_dir):
 
 def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_length, 
                       num_poses, learning_rate, model_dir, max_videos, pool_frames,
-                      movenet_variant: Literal['thunder', 'lightning']='thunder') -> VideoModel:
+                      mediapipe_model_complexity: int = 1) -> VideoModel:
     
     input_shape = (3, sequence_length) if not pool_frames else (3,)
-    num_joints = 17  
+    num_joints = 33   # MediaPipe Pose produces 33 landmarks
 
     model = VideoModel(
         input_shape=input_shape,
@@ -39,7 +38,7 @@ def instantiate_model(dataset_path, batch_size, epochs, train_size, sequence_len
         'num_poses': num_poses,
         'input_shape': input_shape,
         'learning_rate': learning_rate,
-        'movenet_variant': movenet_variant,
+        'mediapipe_model_complexity': mediapipe_model_complexity,
     }
 
     save_training_config(config=config, model_dir=model_dir)
@@ -66,17 +65,17 @@ def train_model(dataset_path,
                 pool_frames=False,
                 model_dir="models",
                 sequence_length=16,
-                movenet_variant: Literal['thunder', 'lightning']='thunder',
+                mediapipe_model_complexity: int = 1,
                 random_state=None,
                 ):
     """
-    Main training function with optional k-fold cross-validation
+    Main training function.
     
     Args:
         dataset_path: Path to video dataset
         batch_size: Batch size for training
         epochs: Number of training epochs
-        train_size: Proportion of data for training (ignored if use_kfold=True)
+        train_size: Proportion of data for training
         learning_rate: Learning rate for optimizer
         max_videos: Maximum number of videos to load (for testing)
         save_processed: Path to save processed data
@@ -84,7 +83,7 @@ def train_model(dataset_path,
         pool_frames: Whether to pool frames temporally
         model_dir: Directory to save model and logs
         sequence_length: Number of frames per video sequence
-        movenet_variant: Which MoveNet model to use ('thunder' or 'lightning')
+        mediapipe_model_complexity: MediaPipe Pose model complexity (0=lite, 1=full, 2=heavy)
         random_state: Random seed for reproducibility
     """
     
@@ -111,18 +110,18 @@ def train_model(dataset_path,
             pool_frames=pool_frames,
             model_dir=model_dir,
             sequence_length=sequence_length,
-            movenet_variant=movenet_variant,
+            mediapipe_model_complexity=mediapipe_model_complexity,
             random_state=random_state
         )
 
 def train_single_split(dataset_path, batch_size, epochs, train_size, learning_rate,
                       max_videos, save_processed, load_processed, pool_frames, 
-                      model_dir, sequence_length, movenet_variant, random_state):
+                      model_dir, sequence_length, mediapipe_model_complexity, random_state):
     """Train with single train/val split"""
     
     train_dataset, val_dataset, num_poses, loader = create_train_val_dataloaders(
         dataset_path=dataset_path,
-        movenet_variant=movenet_variant,
+        mediapipe_model_complexity=mediapipe_model_complexity,
         batch_size=batch_size,
         train_size=train_size,
         sequence_length=sequence_length,
@@ -141,7 +140,7 @@ def train_single_split(dataset_path, batch_size, epochs, train_size, learning_ra
             epochs=epochs,
             train_size=train_size,
             sequence_length=sequence_length,
-            movenet_variant=movenet_variant,
+            mediapipe_model_complexity=mediapipe_model_complexity,
             num_poses=num_poses,
             max_videos=max_videos,
             learning_rate=learning_rate,
@@ -199,10 +198,10 @@ def main():
         sequence_length=256,
         learning_rate=1e-3,
         max_videos=None,
-        load_processed="thunder_data",  
-        save_processed="thunder_data",
-        model_dir="Thunder",
-        movenet_variant='thunder',
+        load_processed="mediapipe_data",
+        save_processed="mediapipe_data",
+        model_dir="models",
+        mediapipe_model_complexity=1,   # 0=lite, 1=full, 2=heavy
         random_state=42,
         pool_frames=False,
     )

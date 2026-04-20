@@ -77,8 +77,8 @@ class TemporalConv(nn.Module):
 
 class STGCNBlock(nn.Module):
     """Spatial-Temporal Graph Convolution Block"""
-    def __init__(self, in_channels, out_channels, num_joints=17, stride=1, 
-                 residual=True, dropout=0.2):  # FIXED: Default dropout reduced to 0.2
+    def __init__(self, in_channels, out_channels, num_joints=33, stride=1, 
+                 residual=True, dropout=0.2):
         super(STGCNBlock, self).__init__()
         
         self.gcn = SpatialGraphConv(in_channels, out_channels)
@@ -132,8 +132,8 @@ class STGCNBlock(nn.Module):
 
 class STGCNModel(nn.Module):
     """ST-GCN Model for Action Recognition"""
-    def __init__(self, num_classes, num_joints=17, in_channels=3,  # FIXED: Changed default to 3
-                 edge_importance_weighting=True, dropout=0.3):  # FIXED: Reduced default dropout
+    def __init__(self, num_classes, num_joints=33, in_channels=3,
+                 edge_importance_weighting=True, dropout=0.3):
         super(STGCNModel, self).__init__()
         
         self.num_classes = num_classes
@@ -171,76 +171,101 @@ class STGCNModel(nn.Module):
         
     def _build_graph(self):
         """
-        Build graph structure for MoveNet skeleton (17 keypoints)
-        Returns edge_index and edge_attr (partition labels)
+        Build graph structure for MediaPipe Pose skeleton (33 keypoints).
+        Returns edge_index and edge_attr (partition labels).
+
+        MediaPipe Pose landmark indices:
+          0: nose
+          1: left_eye_inner,  2: left_eye,   3: left_eye_outer
+          4: right_eye_inner, 5: right_eye,  6: right_eye_outer
+          7: left_ear,        8: right_ear
+          9: mouth_left,     10: mouth_right
+         11: left_shoulder,  12: right_shoulder
+         13: left_elbow,     14: right_elbow
+         15: left_wrist,     16: right_wrist
+         17: left_pinky,     18: right_pinky
+         19: left_index,     20: right_index
+         21: left_thumb,     22: right_thumb
+         23: left_hip,       24: right_hip
+         25: left_knee,      26: right_knee
+         27: left_ankle,     28: right_ankle
+         29: left_heel,      30: right_heel
+         31: left_foot_index,32: right_foot_index
         """
-        # MoveNet keypoints:
-        # 0: nose, 1: left_eye, 2: right_eye, 3: left_ear, 4: right_ear,
-        # 5: left_shoulder, 6: right_shoulder, 7: left_elbow, 8: right_elbow,
-        # 9: left_wrist, 10: right_wrist, 11: left_hip, 12: right_hip,
-        # 13: left_knee, 14: right_knee, 15: left_ankle, 16: right_ankle
-        
         neighbor_link = [
-            (0, 1), (0, 2), (1, 3), (2, 4),  # Head
-            (0, 5), (0, 6),  # Shoulders to nose
-            (5, 6),  # Shoulders connected
-            (5, 7), (7, 9),  # Left arm
-            (6, 8), (8, 10),  # Right arm
-            (5, 11), (6, 12),  # Torso
-            (11, 12),  # Hips connected
-            (11, 13), (13, 15),  # Left leg
-            (12, 14), (14, 16),  # Right leg
+            # Face connections
+            (0, 1), (1, 2), (2, 3),           # nose → left eye chain
+            (0, 4), (4, 5), (5, 6),           # nose → right eye chain
+            (3, 7), (6, 8),                   # outer eyes → ears
+            (9, 10),                          # mouth
+            # Shoulders
+            (11, 12),
+            # Left arm
+            (11, 13), (13, 15),
+            (15, 17), (15, 19), (15, 21),    # wrist → pinky/index/thumb
+            (17, 19),                         # pinky ↔ index (hand)
+            # Right arm
+            (12, 14), (14, 16),
+            (16, 18), (16, 20), (16, 22),    # wrist → pinky/index/thumb
+            (18, 20),                         # pinky ↔ index (hand)
+            # Torso
+            (11, 23), (12, 24),
+            (23, 24),                         # hips connected
+            # Left leg
+            (23, 25), (25, 27),
+            (27, 29), (27, 31),              # ankle → heel/foot_index
+            (29, 31),                         # heel ↔ foot_index
+            # Right leg
+            (24, 26), (26, 28),
+            (28, 30), (28, 32),              # ankle → heel/foot_index
+            (30, 32),                         # heel ↔ foot_index
         ]
-        
+
         self_link = [(i, i) for i in range(self.num_joints)]
-        
+
         # Create edge_index (bidirectional)
         edges = []
         edge_attrs = []
-        
+
         # Self connections (partition 0)
         for i, j in self_link:
             edges.append([i, j])
             edge_attrs.append(0)
-        
-        # Neighbor connections (partition 1 - bidirectional)
+
+        # Neighbor connections (partition 1 — bidirectional)
         for i, j in neighbor_link:
             edges.append([i, j])
             edge_attrs.append(1)
-            edges.append([j, i])  # Reverse direction
+            edges.append([j, i])   # reverse direction
             edge_attrs.append(1)
-        
-        # Create second-order neighbors (partition 2)
-        # For each joint, find neighbors of neighbors
-        adj_matrix = {}
-        for i in range(self.num_joints):
-            adj_matrix[i] = set()
-        
+
+        # Second-order neighbors (partition 2)
+        adj_matrix = {i: set() for i in range(self.num_joints)}
         for i, j in neighbor_link:
             adj_matrix[i].add(j)
             adj_matrix[j].add(i)
-        
+
         second_order = set()
         for i in range(self.num_joints):
             for neighbor in adj_matrix[i]:
                 for second_neighbor in adj_matrix[neighbor]:
                     if second_neighbor != i and second_neighbor not in adj_matrix[i]:
                         second_order.add((i, second_neighbor))
-        
+
         for i, j in second_order:
             edges.append([i, j])
             edge_attrs.append(2)
-        
+
         edge_index = torch.LongTensor(edges).t()
-        edge_attr = torch.LongTensor(edge_attrs)
-        
+        edge_attr  = torch.LongTensor(edge_attrs)
+
         return edge_index, edge_attr
     
     def forward(self, x):
         """
         Args:
             x: Input tensor (batch_size, in_channels, time_steps, num_joints)
-               For MoveNet: (B, 3, 256, 17)
+               For MediaPipe Pose: (B, 3, T, 33)
         """
         # Apply batch normalization
         x = self.data_bn(x)
@@ -285,14 +310,14 @@ class STGCNModel(nn.Module):
 
 class VideoModel:
     """Wrapper class compatible with your training code"""
-    def __init__(self, num_poses, input_shape, num_joints=17, 
-                 learning_rate=0.001, device=None):  # FIXED: Increased LR
+    def __init__(self, num_poses, input_shape, num_joints=33,
+                 learning_rate=0.001, device=None):
         """
         Args:
             num_poses: Number of action classes
-            input_shape: Tuple (features_per_joint, time_steps) 
-                        For MoveNet: (3, 256) where 3 = [x, y, confidence]
-            num_joints: Number of skeleton joints (17 for MoveNet)
+            input_shape: Tuple (features_per_joint, time_steps)
+                        For MediaPipe Pose: (3, T) where 3 = [x_norm, y_norm, visibility]
+            num_joints: Number of skeleton joints (33 for MediaPipe Pose)
             learning_rate: Learning rate for optimizer
         """
         self.num_poses = num_poses
@@ -307,9 +332,8 @@ class VideoModel:
         
         print(f"Using device: {self.device}")
         
-        # FIXED: Correct feature extraction
-        self.features_per_joint = input_shape[0]  # 3 for MoveNet (x, y, conf)
-        self.sequence_length = input_shape[1]     # 256 frames
+        self.features_per_joint = input_shape[0]  # 3 for MediaPipe Pose (x_norm, y_norm, visibility)
+        self.sequence_length = input_shape[1]     # number of frames
         
         print(f"Features per joint: {self.features_per_joint}")
         print(f"Sequence length: {self.sequence_length}")
